@@ -39,6 +39,8 @@ Work on `export-planner`: it contains all four. Tests: `uv sync && uv run pytest
 
 ## Task 2: verify the Self Use assumption before disabling the charge dry run
 
+**Done 2026-10-05:** the inverter had "Charge Battery To" = 10% (Self Use, Charge From Grid enabled) all day, and PV still charged the battery to 94% (15.4 kWh charged, 0 kWh imported). So the limit applies only to grid charging. `AUTOMATION_DRY_RUN=0` and `AUTOMATION_MIN_SOC=10` (the owner's existing inverter value) are set on the LXC. The settings live in SolaX Cloud: Devices → X3-NEO-LV → Operation → Work Mode (not the TOU page).
+
 The charge planner (#3) assumes `chargeUpperSoc` ("Charge battery to") limits **only grid charging** during the charge period and does not cap PV charging. Confirm on the inverter: set a low value (e.g. 30%) and check on a sunny day that PV still charges the battery above it. Only then set `AUTOMATION_DRY_RUN=0`. Also check whether the SolaX Cloud price rule stays active after `batch_set_spontaneity_self_use` is called through the API.
 
 ## Task 3 (main): implement export execution

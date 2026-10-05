@@ -5,6 +5,62 @@ This MCP server can be deployed in two modes:
 1. **MCP Mode (stdio)**: Default for Claude integration
 2. **HTTP Mode**: Lightweight containerized server for Raspberry Pi
 
+## Proxmox LXC with systemd (no Docker)
+
+The production instance runs this way: a Debian 13 LXC (1 vCPU, 512 MB RAM, 4 GB disk, unprivileged, start on boot), the app in `/opt/solax/app` owned by a `solax` system user, dependencies installed with `uv`.
+
+**Run only one instance.** Each new SolaX access token invalidates the previous one, and two servers would also fight over the inverter.
+
+```bash
+# In the container (as root)
+apt-get install -y curl ca-certificates rsync
+useradd --system --create-home --home-dir /opt/solax --shell /usr/sbin/nologin solax
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+
+# From the dev machine: copy tracked files and .env
+# (in it set HTTP_HOST=0.0.0.0 and SOLCAST_CACHE_FILE=/opt/solax/solcast-cache.json)
+git ls-files | rsync -a --files-from=- ./ root@<lxc-ip>:/opt/solax/app/
+rsync -a .env root@<lxc-ip>:/opt/solax/app/.env
+
+# In the container
+chmod 600 /opt/solax/app/.env && chown -R solax:solax /opt/solax
+runuser -u solax -- env UV_CACHE_DIR=/opt/solax/.cache/uv sh -c 'cd /opt/solax/app && uv sync --frozen --no-dev'
+```
+
+`/etc/systemd/system/solax.service`:
+
+```ini
+[Unit]
+Description=SolaX Cloud HTTP server (battery automation and export)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=solax
+WorkingDirectory=/opt/solax/app
+EnvironmentFile=/opt/solax/app/.env
+ExecStart=/opt/solax/app/.venv/bin/python -m solax_cloud_mcp
+Restart=on-failure
+RestartSec=10
+# On stop the server exits SolaX remote control before quitting
+TimeoutStopSec=60
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/solax
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+systemctl daemon-reload && systemctl enable --now solax
+journalctl -u solax -f
+```
+
+To update: repeat the `rsync` of tracked files, run `uv sync --frozen --no-dev` again as `solax`, then `systemctl restart solax`.
+
 ## Quick Start: HTTP Server on Raspberry Pi
 
 ### Prerequisites

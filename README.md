@@ -211,7 +211,7 @@ The API key is sent in the `Authorization` header only, never in the URL.
 
 ### Battery Automation (forecast-driven grid charging)
 
-Built into the HTTP server and disabled by default. Designed for time-of-use tariffs such as Polish **G12w**: cheap at 22:00-06:00 and 13:00-15:00 on weekdays, all day on weekends and public holidays.
+Built into the HTTP server and disabled by default. Designed for time-of-use tariffs such as Polish **G12w**: cheap at 22:00-06:00 and 13:00-15:00 on weekdays in winter (1 Oct - 31 Mar), 22:00-06:00 and 15:00-17:00 in summer (1 Apr - 30 Sep), and all day on weekends and public holidays. Set `TARIFF_OFFPEAK_WINDOWS` (winter or all year) and `TARIFF_OFFPEAK_WINDOWS_SUMMER` for other tariffs.
 
 **How it works:** a few minutes before each daily off-peak window (`AUTOMATION_LEAD_MINUTES`), the planner:
 1. Takes the peak-price hours right after the window, e.g. 06:00-13:00 after the night window and 15:00-22:00 after the midday one. When the window is followed by more off-peak time (Friday night, holidays), there is nothing to cover and grid charging is disabled.
@@ -229,7 +229,23 @@ If the forecast or the SolaX call fails, the inverter keeps its previous setting
 - `GET /api/automation`: enabled/dry-run status, next run, last result.
 - `POST /api/automation/preview`: plan for the next window, computed now, never written.
 
+House consumption comes from `AUTOMATION_CONSUMPTION_PROFILE`, 24 hourly kWh values (or a flat `AUTOMATION_DAILY_CONSUMPTION_KWH`). An optional `AUTOMATION_WEEKEND_CONSUMPTION_PROFILE` / `AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH` applies on weekends and Polish public holidays.
+
 See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
+
+### Market Prices and Export Planner (RCE, dry run)
+
+**Prices:** the `get_energy_prices` MCP tool and `GET /api/prices?hours=24` return Polish market prices (RCE, 15-minute periods, PLN/kWh net) from the public PSE API (`api.raporty.pse.pl/api/rce-pln`, no key needed). Responses are cached for 30 minutes. PSE publishes the next day's prices in the afternoon.
+
+**Export planner** (`EXPORT_ENABLED=1`, requires battery automation): every 15 minutes it reads the current SOC, the PV forecast and RCE prices, then:
+1. Computes the battery **surplus**: energy above `AUTOMATION_MIN_SOC` minus what the house needs until the next off-peak window (consumption − PV, same model as the charge planner). Selling therefore never forces buying back at peak price.
+2. Allocates the surplus to the most expensive slots at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0). `EXPORT_MAX_POWER_KW` is the **inverter AC output setpoint**: the house load is served first and only the rest goes to the grid. Per slot, `export = setpoint × 0.25 h − expected house load`. When exporting live, the setpoint sent is the planned export plus the house load measured now (AC output minus grid power), capped at `EXPORT_MAX_POWER_KW`. The plan shows `export_kWh`, `expectedHouseLoad_kWh` and the `dischargeSetpoint_kW` needed, which equals export plus load.
+
+The plan also reports `recommendedExportFloorSoc`: the SOC floor that keeps enough energy for the house until the next off-peak window. Use it to tune a price-based export rule configured in SolaX Cloud (e.g. "discharge to X%, max 5 kW, if export price > 1 PLN"), which uses a fixed floor.
+
+`POST /api/export/preview` shows the plan. `GET /api/automation` shows the last plan under `export`.
+
+> **Dry run by default.** With `EXPORT_DRY_RUN=0` the server sends, at the start of each export slot, SolaX remote control `soc_target_control_mode` (discharge at the slot setpoint until `recommendedExportFloorSoc`). In any other slot it exits remote control, so the inverter goes back to its normal work mode. The mode has no duration: if the server stops mid-slot, the inverter keeps discharging but stops at the floor SOC. Charge-planner and export writes never run at the same time. Disable any SolaX Cloud price rule that also discharges, so the two do not fight. (`push_power` mode is accepted but ignored by the X3-NEO-LV.)
 
 ### Example Usage in Claude
 

@@ -1,7 +1,9 @@
 """Solcast PV power forecast client (rooftop sites API) with response caching."""
 
 import asyncio
+import json
 import logging
+import os
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -19,6 +21,36 @@ PERIOD_HOURS = 0.5  # Solcast rooftop forecasts use PT30M periods
 # Hobbyist accounts get ~10 calls/day, so cache per-site responses and serve stale data on failure.
 _cache: dict[str, tuple[float, list[dict]]] = {}
 _cache_lock = asyncio.Lock()
+_cache_loaded = False
+
+
+def _load_cache_file() -> None:
+    """Fill the in-memory cache from SOLCAST_CACHE_FILE once per process."""
+    global _cache_loaded
+    _cache_loaded = True
+    path = config.get_solcast_cache_file()
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        for rid, (fetched_at, periods) in data.items():
+            _cache.setdefault(rid, (float(fetched_at), periods))
+    except (OSError, ValueError, TypeError) as e:
+        logger.warning("Ignoring unreadable Solcast cache file %s: %s", path, e)
+
+
+def _save_cache_file() -> None:
+    path = config.get_solcast_cache_file()
+    if not path:
+        return
+    try:
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as f:
+            json.dump({rid: [t, periods] for rid, (t, periods) in _cache.items()}, f)
+        os.replace(tmp, path)
+    except OSError as e:
+        logger.warning("Could not write Solcast cache file %s: %s", path, e)
 
 
 class SolcastError(Exception):
@@ -68,6 +100,7 @@ async def _get_site_forecast(client: httpx.AsyncClient, resource_id: str) -> tup
 
     fetched_at = time.time()
     _cache[resource_id] = (fetched_at, periods)
+    _save_cache_file()
     return periods, fetched_at, False
 
 
@@ -156,6 +189,8 @@ async def get_solar_forecast(hours: int = 24) -> dict:
     tz = ZoneInfo(config.get_solar_timezone())
 
     async with _cache_lock:
+        if not _cache_loaded:
+            _load_cache_file()
         async with httpx.AsyncClient(timeout=15.0) as client:
             results = [await _get_site_forecast(client, rid) for rid in resource_ids]
 

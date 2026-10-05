@@ -7,6 +7,7 @@ Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast o
 - Inverter: SolaX **X3-NEO-12K-LV**, 3-phase, 12 kW AC. Low-voltage (48 V) battery, inverter battery limit 280 A.
 - Battery: **21.2 kWh**, 4 modules in parallel, 120 A continuous each (210 A for 10 s). In practice the inverter is the limit, not the battery.
 - PV: **6.48 kWp**, 16 × JKM405M-72HL-TV, ground mount, tilt 30°, facing **south-west** (compass 215°; Solcast azimuth **145**, where north = 0, south = ±180 and west is positive). Grid connection: 21 kW (expandable to 30 kW).
+- Production server: Proxmox LXC 109 `solax` at 192.168.100.50:8000, systemd unit `solax` (see DEPLOYMENT.md). The Raspberry Pi is not used.
 - Tariff: **G12w**. Off-peak 22–06 and 13–15 on weekdays, all day on weekends and Polish public holidays. Hourly net-billing.
 - Export valuation: **RCE** (15-min market price from PSE). The SolaX app uses a TGE price list as an approximation, because RCE cannot be configured there.
 - Owner verified manually: battery discharge at **5 kW** works. The discharge setpoint is **battery output**: the house load is served first and only the rest is exported. So 3 kW with a 2.5 kW appliance running gives almost no export.

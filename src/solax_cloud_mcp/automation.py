@@ -480,11 +480,9 @@ class AutomationScheduler:
         return True
 
     async def _export_loop(self) -> None:
+        # First run right away (a restart mid-slot must act on the current slot), then just after
+        # each 15-minute slot boundary
         while True:
-            # Run just after each 15-minute slot boundary
-            now = datetime.now(timezone.utc)
-            next_slot = now.replace(second=0, microsecond=0) + timedelta(minutes=15 - now.minute % 15)
-            await asyncio.sleep((next_slot - now).total_seconds() + 5)
             try:
                 plan = await self.export_plan()
                 if self.export.dry_run:
@@ -501,6 +499,9 @@ class AutomationScheduler:
                     async with self._write_lock:
                         await self._exit_remote_control(config.get_default_device_sn())
             self.last_export = result
+            now = datetime.now(timezone.utc)
+            next_slot = now.replace(second=0, microsecond=0) + timedelta(minutes=15 - now.minute % 15)
+            await asyncio.sleep((next_slot - now).total_seconds() + 5)
 
     async def preview(self) -> dict:
         trigger = next_trigger(self.settings, datetime.now(timezone.utc))

@@ -162,3 +162,32 @@ async def test_forecast_tool_registered_only_when_configured(monkeypatch):
     assert "get_solar_forecast" in await _tool_names()
     monkeypatch.delenv("SOLCAST_API_KEY")
     importlib.reload(server)
+
+
+def test_automation_status_disabled(api, monkeypatch):
+    assert api.get("/api/automation", headers=AUTH).json() == {"enabled": False}
+    assert api.post("/api/automation/preview", headers=AUTH).status_code == 503
+    assert api.get("/api/automation").status_code == 403
+
+
+def test_automation_enabled_requires_solcast(monkeypatch):
+    monkeypatch.setenv("HTTP_API_KEY", API_KEY)
+    monkeypatch.setenv("AUTOMATION_ENABLED", "1")
+    monkeypatch.delenv("SOLCAST_API_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="SOLCAST"):
+        http_server.create_app()
+
+
+def test_automation_status_enabled_runs_scheduler(monkeypatch):
+    monkeypatch.setenv("HTTP_API_KEY", API_KEY)
+    monkeypatch.setenv("AUTOMATION_ENABLED", "1")
+    monkeypatch.setenv("SOLCAST_API_KEY", "k")
+    monkeypatch.setenv("SOLCAST_RESOURCE_IDS", "site-a")
+    monkeypatch.setenv("SOLAX_DEVICE_SN", "SN1")
+    monkeypatch.setenv("BATTERY_CAPACITY_KWH", "21.2")
+    monkeypatch.setenv("AUTOMATION_DAILY_CONSUMPTION_KWH", "12")
+    with TestClient(http_server.create_app()) as client:  # context manager runs lifespan
+        body = client.get("/api/automation", headers=AUTH).json()
+    assert body["enabled"] is True
+    assert body["dryRun"] is True
+    assert body["nextRun"] is not None

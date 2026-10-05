@@ -209,6 +209,28 @@ Available when `SOLCAST_API_KEY` and `SOLCAST_RESOURCE_IDS` are set. Read-only P
 
 The API key is sent in the `Authorization` header only, never in the URL.
 
+### Battery Automation (forecast-driven grid charging)
+
+Built into the HTTP server and disabled by default. Designed for time-of-use tariffs such as Polish **G12w**: cheap at 22:00-06:00 and 13:00-15:00 on weekdays, all day on weekends and public holidays.
+
+**How it works:** a few minutes before each daily off-peak window (`AUTOMATION_LEAD_MINUTES`), the planner:
+1. Takes the peak-price hours right after the window, e.g. 06:00-13:00 after the night window and 15:00-22:00 after the midday one. When the window is followed by more off-peak time (Friday night, holidays), there is nothing to cover and grid charging is disabled.
+2. For each of those hours, compares the consumption profile with the Solcast PV forecast (`AUTOMATION_FORECAST_PERCENTILE`). The largest cumulative deficit is the energy the battery must hold at the start of the peak, so PV surplus earlier in the segment offsets later deficits.
+3. Converts that energy to a target SOC: `min_soc + (deficit / efficiency + margin) / capacity`, capped at `AUTOMATION_MAX_GRID_SOC`.
+4. Calls Self Use Mode with `minSoc=AUTOMATION_MIN_SOC`, `chargeUpperSoc=target`, grid charging on only when target > reserve, and the charge period set to the off-peak window.
+
+If the forecast or the SolaX call fails, the inverter keeps its previous settings and the error is logged.
+
+**Safety:** `AUTOMATION_DRY_RUN=1` (default) only logs decisions. Watch `GET /api/automation` and the logs for a few days, check that the decisions match how your inverter behaves, then set `AUTOMATION_DRY_RUN=0`.
+
+> Verify on your inverter that `chargeUpperSoc` ("Charge battery to") limits only **grid** charging during the charge period and does not cap PV charging. The planner relies on this.
+
+**Endpoints** (bearer auth):
+- `GET /api/automation`: enabled/dry-run status, next run, last result.
+- `POST /api/automation/preview`: plan for the next window, computed now, never written.
+
+See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
+
 ### Example Usage in Claude
 
 > "What's the current power output of my solar inverter?"

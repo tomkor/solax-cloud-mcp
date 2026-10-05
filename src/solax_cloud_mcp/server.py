@@ -5,7 +5,14 @@ import re
 from mcp.server.fastmcp import FastMCP
 
 from .client import SolaxApiError, fetch_realtime_data, set_self_use_mode
-from .config import get_client_id, get_client_secret, get_default_device_sn, is_write_enabled
+from .config import (
+    get_client_id,
+    get_client_secret,
+    get_default_device_sn,
+    is_solcast_configured,
+    is_write_enabled,
+)
+from .forecast import SolcastError, get_solar_forecast
 from .models import shape_realtime_response
 
 # Validate configuration at import time
@@ -207,6 +214,47 @@ async def set_battery_self_use_mode(
         discharge_start_time_period2=discharge_start_time_period2,
         discharge_end_time_period2=discharge_end_time_period2,
     )
+
+
+async def get_solar_forecast_impl(hours: int = 24) -> dict:
+    """Core implementation of get_solar_forecast, shared by MCP and HTTP modes."""
+    if not is_solcast_configured():
+        raise ValueError("Solcast is not configured: set SOLCAST_API_KEY and SOLCAST_RESOURCE_IDS")
+    if not (1 <= hours <= 168):
+        raise ValueError(f"hours must be between 1 and 168, got {hours}")
+    try:
+        return await get_solar_forecast(hours)
+    except SolcastError as e:
+        raise ValueError(f"Solcast API error: {e}") from e
+
+
+async def solar_forecast(hours: int = 24) -> dict:
+    """Get the PV production forecast for the installation from Solcast.
+
+    Use it together with get_realtime_data (battery SOC) to plan battery charging,
+    e.g. lower charge_upper_soc / disable grid charging before a sunny day, raise it
+    before a cloudy one. Values are the sum of all configured rooftop sites.
+
+    p50 is the most likely value; p10 is a pessimistic (cloudier) and p90 an optimistic
+    scenario. Energy is in kWh, power in kW, timestamps in the configured local timezone.
+    Data is cached (Solcast free tier allows ~10 calls/day); `stale: true` means the
+    latest refresh failed and older cached data is returned.
+
+    Args:
+        hours: How many upcoming hours to include in the hourly profile (1-168). Default: 24.
+
+    Returns:
+        - days: per-day forecast energy (p10/p50/p90) with peak power and its time
+        - remainingToday_kWh: forecast energy still to come today
+        - hourly: average PV power per hour for the next `hours` hours
+        - fetchedAt, stale, timezone, source
+    """
+    return await get_solar_forecast_impl(hours)
+
+
+# Forecast is read-only; expose it only when Solcast credentials are configured.
+if is_solcast_configured():
+    server.tool(name="get_solar_forecast")(solar_forecast)
 
 
 # Write tool changes physical inverter settings; expose it to the LLM only on explicit opt-in.

@@ -5,11 +5,18 @@ import os
 import secrets
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from .client import SolaxApiError
-from .server import HHMM_PATTERN, get_realtime_data_impl, set_battery_self_use_mode_impl
+from .config import is_solcast_configured
+from .forecast import SolcastError
+from .server import (
+    HHMM_PATTERN,
+    get_realtime_data_impl,
+    get_solar_forecast_impl,
+    set_battery_self_use_mode_impl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +87,9 @@ def create_app() -> FastAPI:
         if isinstance(e.__cause__, SolaxApiError):
             logger.error("SolaX API call failed: %s", e)
             return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="SolaX API request failed")
+        if isinstance(e.__cause__, SolcastError):
+            logger.error("Solcast API call failed: %s", e)
+            return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Solcast API request failed")
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     # Routes
@@ -97,6 +107,18 @@ def create_app() -> FastAPI:
         """
         try:
             return await get_realtime_data_impl(req.device_sn)
+        except ValueError as e:
+            raise to_http_error(e) from e
+
+    @app.get("/api/solar-forecast", dependencies=[Depends(verify_api_key)])
+    async def get_solar_forecast_endpoint(
+        hours: Annotated[int, Query(ge=1, le=168, description="Hours of hourly profile")] = 24,
+    ) -> dict:
+        """PV production forecast from Solcast (cached). Requires bearer token."""
+        if not is_solcast_configured():
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Solcast is not configured")
+        try:
+            return await get_solar_forecast_impl(hours)
         except ValueError as e:
             raise to_http_error(e) from e
 

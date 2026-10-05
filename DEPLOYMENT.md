@@ -114,6 +114,11 @@ services:
       HTTP_HOST: 0.0.0.0                # All interfaces inside the container; host exposure via ports
       HTTP_PORT: 8000                   # Port number
       HTTP_API_KEY: ${HTTP_API_KEY}     # Bearer token for authentication
+      # Solcast PV forecast (optional)
+      SOLCAST_API_KEY: ${SOLCAST_API_KEY:-}
+      SOLCAST_RESOURCE_IDS: ${SOLCAST_RESOURCE_IDS:-}
+      SOLCAST_CACHE_MINUTES: ${SOLCAST_CACHE_MINUTES:-180}
+      SOLAR_TIMEZONE: ${SOLAR_TIMEZONE:-UTC}
     
     # Restart policy: restart unless manually stopped
     restart: unless-stopped
@@ -154,6 +159,10 @@ services:
 | `HTTP_API_KEY` | Bearer token for API authentication | `YWJjMTIzaG...` |
 | `HTTP_HOST` | Interface the server binds to (default `127.0.0.1`; the Docker image sets `0.0.0.0`) | `0.0.0.0` (all), `127.0.0.1` (localhost) |
 | `HTTP_BIND_ADDR` | docker-compose: host address the port is published on (default `127.0.0.1`) | `192.168.1.10` |
+| `SOLCAST_API_KEY` | Solcast API key (optional, enables forecast) | `abc123...` |
+| `SOLCAST_RESOURCE_IDS` | Comma-separated Solcast rooftop site IDs | `abcd-1234-ef56-7890` |
+| `SOLCAST_CACHE_MINUTES` | Forecast cache TTL (hobbyist: ~10 calls/day) | `180` |
+| `SOLAR_TIMEZONE` | IANA timezone for forecast days/timestamps | `Europe/Warsaw` |
 | `SOLAX_ALLOW_WRITE` | MCP mode: expose `set_battery_self_use_mode` tool to the LLM (default off) | `1` |
 | `HTTP_PORT` | Port number | `8000` |
 | `TRANSPORT` | Execution mode | `http` or `stdio` |

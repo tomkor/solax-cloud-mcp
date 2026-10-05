@@ -24,6 +24,11 @@ services:
       HTTP_PORT: 8000
       # HTTP API authentication
       HTTP_API_KEY: ${HTTP_API_KEY}
+      # Solcast PV forecast (optional)
+      SOLCAST_API_KEY: ${SOLCAST_API_KEY:-}
+      SOLCAST_RESOURCE_IDS: ${SOLCAST_RESOURCE_IDS:-}
+      SOLCAST_CACHE_MINUTES: ${SOLCAST_CACHE_MINUTES:-180}
+      SOLAR_TIMEZONE: ${SOLAR_TIMEZONE:-UTC}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]

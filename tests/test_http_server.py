@@ -122,3 +122,43 @@ async def test_write_tool_exposed_when_enabled(monkeypatch):
     assert "set_battery_self_use_mode" in await _tool_names()
     monkeypatch.delenv("SOLAX_ALLOW_WRITE")
     importlib.reload(server)
+
+
+def test_forecast_endpoint_requires_auth(api):
+    assert api.get("/api/solar-forecast").status_code == 403
+
+
+def test_forecast_endpoint_not_configured(api, monkeypatch):
+    monkeypatch.delenv("SOLCAST_API_KEY", raising=False)
+    assert api.get("/api/solar-forecast", headers=AUTH).status_code == 503
+
+
+def test_forecast_endpoint_hides_upstream_error(api, monkeypatch):
+    from solax_cloud_mcp.forecast import SolcastError
+
+    monkeypatch.setenv("SOLCAST_API_KEY", "k")
+    monkeypatch.setenv("SOLCAST_RESOURCE_IDS", "site-a")
+
+    async def failing(hours):
+        raise SolcastError("HTTP 500: <solcast body>")
+
+    monkeypatch.setattr(server, "get_solar_forecast", failing)
+    resp = api.get("/api/solar-forecast", headers=AUTH)
+    assert resp.status_code == 502
+    assert "solcast body" not in resp.text
+
+
+def test_forecast_endpoint_validates_hours(api, monkeypatch):
+    monkeypatch.setenv("SOLCAST_API_KEY", "k")
+    monkeypatch.setenv("SOLCAST_RESOURCE_IDS", "site-a")
+    assert api.get("/api/solar-forecast?hours=500", headers=AUTH).status_code == 422
+
+
+async def test_forecast_tool_registered_only_when_configured(monkeypatch):
+    monkeypatch.delenv("SOLCAST_API_KEY", raising=False)
+    assert "get_solar_forecast" not in await _tool_names()
+    monkeypatch.setenv("SOLCAST_API_KEY", "k")
+    monkeypatch.setenv("SOLCAST_RESOURCE_IDS", "site-a")
+    assert "get_solar_forecast" in await _tool_names()
+    monkeypatch.delenv("SOLCAST_API_KEY")
+    importlib.reload(server)

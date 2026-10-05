@@ -16,7 +16,8 @@ from zoneinfo import ZoneInfo
 
 from . import config
 from .forecast import get_solar_forecast
-from .server import set_battery_self_use_mode_impl
+from .prices import PriceSlot, get_rce_prices
+from .server import get_realtime_data_impl, set_battery_self_use_mode_impl
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +230,119 @@ def compute_plan(settings: Settings, trigger: Trigger, pv_by_hour: dict[datetime
     }
 
 
+@dataclass(frozen=True)
+class ExportSettings:
+    min_price_pln_kwh: float
+    max_power_kw: float
+    min_slot_kwh: float
+    price_multiplier: float
+    dry_run: bool
+
+    @classmethod
+    def from_env(cls) -> "ExportSettings":
+        def env(name: str, default: str | None = None) -> str | None:
+            return os.getenv(name) or default
+
+        max_power = env("EXPORT_MAX_POWER_KW")
+        if not max_power:
+            raise RuntimeError("EXPORT_MAX_POWER_KW is required when EXPORT_ENABLED=1")
+        if env("EXPORT_DRY_RUN", "1") == "0":
+            # The SolaX push-power command semantics (sign/units of batteryPower, nextMotion) are not
+            # verified yet, so the planner may only log decisions.
+            raise RuntimeError("EXPORT_DRY_RUN=0 is not supported yet: battery export commands are not implemented")
+        return cls(
+            min_price_pln_kwh=float(env("EXPORT_MIN_PRICE_PLN_KWH", "1.0")),
+            max_power_kw=float(max_power),
+            min_slot_kwh=float(env("EXPORT_MIN_SLOT_KWH", "0.2")),
+            price_multiplier=float(env("EXPORT_PRICE_MULTIPLIER", "1.0")),
+            dry_run=True,
+        )
+
+
+def _horizon_end(settings: Settings, now: datetime) -> datetime:
+    """Next daily off-peak window start: the next point where the charge planner refills the battery."""
+    return next_trigger(settings, now).window_start
+
+
+def _reserve_need(settings: Settings, start: datetime, end: datetime, pv_by_hour: dict[datetime, float]) -> float:
+    """Energy (kWh) the battery must keep for the house between start and end (max cumulative deficit)."""
+    hour = start.astimezone(settings.tz).replace(minute=0, second=0, microsecond=0)
+    running = peak = 0.0
+    while hour < end:
+        running += settings.consumption_profile[hour.hour] - pv_by_hour.get(hour, 0.0)
+        peak = max(peak, running)
+        hour += timedelta(hours=1)
+    return peak / settings.efficiency + settings.safety_margin_kwh if peak > 0 else 0.0
+
+
+def compute_export_plan(
+    settings: Settings,
+    export: ExportSettings,
+    now: datetime,
+    soc_percent: float,
+    pv_by_hour: dict[datetime, float],
+    prices: list[PriceSlot],
+) -> dict:
+    """Pick the most expensive 15-min slots until the next off-peak window to sell surplus battery energy.
+
+    Surplus = energy above the SOC reserve minus what the house needs until the next window (so selling
+    never forces buying back at peak price). Surplus is allocated greedily to the highest-price slots at
+    or above the threshold, limited by max export power per slot.
+    """
+    horizon = _horizon_end(settings, now)
+    reserve = _reserve_need(settings, now, horizon, pv_by_hour)
+    stored = max(0.0, (soc_percent - settings.min_soc) / 100 * settings.capacity_kwh)
+    surplus = max(0.0, stored - reserve)
+
+    candidates = [
+        s for s in prices
+        if s.end > now and s.start < horizon and s.price_pln_kwh * export.price_multiplier >= export.min_price_pln_kwh
+    ]
+    remaining = surplus
+    per_slot_max = export.max_power_kw * 0.25
+    chosen = []
+    for slot in sorted(candidates, key=lambda s: s.price_pln_kwh, reverse=True):
+        energy = min(per_slot_max, remaining)
+        if energy < export.min_slot_kwh:
+            break
+        chosen.append((slot, energy))
+        remaining -= energy
+
+    current = next(((s, e) for s, e in chosen if s.start <= now < s.end), None)
+    tz = settings.tz
+
+    def r(x: float) -> float:
+        return round(x, 2)
+
+    return {
+        "now": now.astimezone(tz).isoformat(timespec="minutes"),
+        "horizonEnd": horizon.isoformat(timespec="minutes"),
+        "socPercent": soc_percent,
+        "storedAboveMinSoc_kWh": r(stored),
+        "reserveForHouse_kWh": r(reserve),
+        "surplus_kWh": r(surplus),
+        "minPrice_PLN_kWh": export.min_price_pln_kwh,
+        "slots": [
+            {
+                "start": s.start.astimezone(tz).isoformat(timespec="minutes"),
+                "end": s.end.astimezone(tz).isoformat(timespec="minutes"),
+                "price_PLN_kWh": r(s.price_pln_kwh * export.price_multiplier),
+                "energy_kWh": r(e),
+                "power_kW": r(e / 0.25),
+                "revenue_PLN": r(e * s.price_pln_kwh * export.price_multiplier),
+            }
+            for s, e in sorted(chosen, key=lambda c: c[0].start)
+        ],
+        "plannedExport_kWh": r(surplus - remaining),
+        "currentSlot": (
+            {"export": True, "power_kW": r(current[1] / 0.25), "price_PLN_kWh": r(current[0].price_pln_kwh * export.price_multiplier)}
+            if current
+            else {"export": False}
+        ),
+        "dryRun": export.dry_run,
+    }
+
+
 def _pv_by_hour(forecast: dict, percentile: str) -> dict[datetime, float]:
     # Hourly entries are average kW over the hour == kWh in that hour
     return {datetime.fromisoformat(h["time"]): h["power_kW"][percentile] for h in forecast["hourly"]}
@@ -237,11 +351,14 @@ def _pv_by_hour(forecast: dict, percentile: str) -> dict[datetime, float]:
 class AutomationScheduler:
     """Background task that runs the planner before each off-peak window."""
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, export: ExportSettings | None = None):
         self.settings = settings
+        self.export = export
         self.last_result: dict | None = None
+        self.last_export: dict | None = None
         self.next_run: Trigger | None = None
         self._task: asyncio.Task | None = None
+        self._export_task: asyncio.Task | None = None
 
     async def run(self, trigger: Trigger, apply: bool) -> dict:
         """Compute a plan for `trigger` and optionally write it to the inverter."""
@@ -263,6 +380,38 @@ class AutomationScheduler:
             )
             plan["applied"] = True
         return plan
+
+    async def export_plan(self, now: datetime | None = None) -> dict:
+        """Compute the export plan from current SOC, PV forecast and RCE prices (never writes)."""
+        if not self.export:
+            raise RuntimeError("Export planner is not enabled")
+        now = now or datetime.now(timezone.utc)
+        realtime = await get_realtime_data_impl(None)
+        battery = realtime.get("battery") or {}
+        soc = battery.get("soc_percent")
+        if soc is None:
+            raise ValueError("Battery SOC not available from SolaX realtime data")
+        forecast = await get_solar_forecast(hours=48)
+        prices = await get_rce_prices()
+        return compute_export_plan(
+            self.settings, self.export, now, float(soc), _pv_by_hour(forecast, self.settings.percentile), prices
+        )
+
+    async def _export_loop(self) -> None:
+        while True:
+            # Run just after each 15-minute slot boundary
+            now = datetime.now(timezone.utc)
+            next_slot = now.replace(second=0, microsecond=0) + timedelta(minutes=15 - now.minute % 15)
+            await asyncio.sleep((next_slot - now).total_seconds() + 5)
+            try:
+                plan = await self.export_plan()
+                if plan["currentSlot"]["export"]:
+                    logger.info("Export plan (dry run): would export %s", plan["currentSlot"])
+                result = plan
+            except Exception as e:
+                logger.exception("Export planner run failed")
+                result = {"error": f"{type(e).__name__} (details in server logs)"}
+            self.last_export = result
 
     async def preview(self) -> dict:
         trigger = next_trigger(self.settings, datetime.now(timezone.utc))
@@ -291,14 +440,17 @@ class AutomationScheduler:
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
+        if self.export:
+            self._export_task = asyncio.create_task(self._export_loop())
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+        for task in (self._task, self._export_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     def status(self) -> dict:
         return {
@@ -307,4 +459,9 @@ class AutomationScheduler:
             "nextRun": self.next_run.run_at.isoformat(timespec="minutes") if self.next_run else None,
             "nextWindow": f"{self.next_run.window[0]:02d}:00-{self.next_run.window[1]:02d}:00" if self.next_run else None,
             "lastResult": self.last_result,
+            "export": (
+                {"enabled": True, "dryRun": self.export.dry_run, "lastPlan": self.last_export}
+                if self.export
+                else {"enabled": False}
+            ),
         }

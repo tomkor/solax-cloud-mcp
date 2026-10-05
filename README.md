@@ -231,6 +231,18 @@ If the forecast or the SolaX call fails, the inverter keeps its previous setting
 
 See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
 
+### Market Prices and Export Planner (RCE, dry run)
+
+**Prices:** the `get_energy_prices` MCP tool and `GET /api/prices?hours=24` return Polish market prices (RCE, 15-minute periods, PLN/kWh net) from the public PSE API (`api.raporty.pse.pl/api/rce-pln`, no key needed). Responses are cached for 30 minutes. PSE publishes the next day's prices in the afternoon.
+
+**Export planner** (`EXPORT_ENABLED=1`, requires battery automation): every 15 minutes it reads the current SOC, the PV forecast and RCE prices, then:
+1. Computes the battery **surplus**: energy above `AUTOMATION_MIN_SOC` minus what the house needs until the next off-peak window (consumption − PV, same model as the charge planner). Selling therefore never forces buying back at peak price.
+2. Allocates the surplus to the most expensive slots at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0), up to `EXPORT_MAX_POWER_KW` per slot.
+
+`POST /api/export/preview` shows the plan. `GET /api/automation` shows the last plan under `export`.
+
+> **Dry run only.** Sending battery export commands (SolaX VPP "push power") is not implemented until the command's parameters (sign and units of `batteryPower`, `timeOfDuration`, `nextMotion`) are verified against the official SolaX documentation. `EXPORT_DRY_RUN=0` is rejected at startup.
+
 ### Example Usage in Claude
 
 > "What's the current power output of my solar inverter?"

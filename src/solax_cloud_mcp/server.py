@@ -1,6 +1,7 @@
 """MCP server for SolaX Developer Platform real-time data and control."""
 
 import re
+from datetime import datetime, timedelta, timezone
 
 from mcp.server.fastmcp import FastMCP
 
@@ -13,6 +14,7 @@ from .config import (
     is_write_enabled,
 )
 from .forecast import SolcastError, get_solar_forecast
+from .prices import PriceError, get_rce_prices
 from .models import shape_realtime_response
 
 # Validate configuration at import time
@@ -250,6 +252,49 @@ async def solar_forecast(hours: int = 24) -> dict:
         - fetchedAt, stale, timezone, source
     """
     return await get_solar_forecast_impl(hours)
+
+
+async def get_energy_prices_impl(hours: int = 24) -> dict:
+    """Core implementation of get_energy_prices, shared by MCP and HTTP modes."""
+    if not (1 <= hours <= 48):
+        raise ValueError(f"hours must be between 1 and 48, got {hours}")
+    try:
+        slots = await get_rce_prices()
+    except PriceError as e:
+        raise ValueError(f"PSE price API error: {e}") from e
+    now = datetime.now(timezone.utc)
+    until = now + timedelta(hours=hours)
+    upcoming = [s for s in slots if s.end > now and s.start < until]
+    return {
+        "source": "PSE RCE",
+        "unit": "PLN/kWh (net)",
+        "slots": [
+            {
+                "start": s.start.isoformat(timespec="minutes"),
+                "end": s.end.isoformat(timespec="minutes"),
+                "price_PLN_kWh": round(s.price_pln_kwh, 4),
+            }
+            for s in upcoming
+        ],
+        "max": max((round(s.price_pln_kwh, 4) for s in upcoming), default=None),
+        "min": min((round(s.price_pln_kwh, 4) for s in upcoming), default=None),
+    }
+
+
+@server.tool()
+async def get_energy_prices(hours: int = 24) -> dict:
+    """Get Polish market energy prices (RCE, 15-minute periods) from PSE for the next hours.
+
+    RCE is the price used to value energy exported to the grid under net-billing. Prices for
+    the next day are published by PSE in the afternoon, so the list may end at midnight.
+
+    Args:
+        hours: How many hours ahead to return (1-48). Default: 24.
+
+    Returns:
+        slots (start, end, price_PLN_kWh net), plus min and max price in the range.
+    """
+    return await get_energy_prices_impl(hours)
 
 
 # Forecast is read-only; expose it only when Solcast credentials are configured.

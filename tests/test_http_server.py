@@ -191,3 +191,32 @@ def test_automation_status_enabled_runs_scheduler(monkeypatch):
     assert body["enabled"] is True
     assert body["dryRun"] is True
     assert body["nextRun"] is not None
+
+
+def test_prices_endpoint(api, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    from solax_cloud_mcp.prices import PriceSlot
+
+    start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+
+    async def fake_prices():
+        return [PriceSlot(start=start, end=start + timedelta(minutes=15), price_pln_kwh=1.1)]
+
+    monkeypatch.setattr(server, "get_rce_prices", fake_prices)
+    body = api.get("/api/prices?hours=2", headers=AUTH).json()
+    assert body["max"] == 1.1
+    assert len(body["slots"]) == 1
+    assert api.get("/api/prices").status_code == 403
+
+
+def test_export_preview_disabled(api):
+    assert api.post("/api/export/preview", headers=AUTH).status_code == 503
+
+
+def test_export_requires_automation(monkeypatch):
+    monkeypatch.setenv("HTTP_API_KEY", API_KEY)
+    monkeypatch.setenv("EXPORT_ENABLED", "1")
+    monkeypatch.delenv("AUTOMATION_ENABLED", raising=False)
+    with pytest.raises(RuntimeError, match="AUTOMATION_ENABLED"):
+        http_server.create_app()

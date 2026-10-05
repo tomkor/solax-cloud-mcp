@@ -99,3 +99,8 @@ def get_solar_timezone() -> str:
 def is_automation_enabled() -> bool:
     """Whether the forecast-driven battery planner runs inside the HTTP server (AUTOMATION_ENABLED=1)."""
     return os.getenv("AUTOMATION_ENABLED", "").strip().lower() in ("1", "true", "yes")
+
+
+def is_export_enabled() -> bool:
+    """Whether the price-driven battery export planner runs (EXPORT_ENABLED=1, requires automation)."""
+    return os.getenv("EXPORT_ENABLED", "").strip().lower() in ("1", "true", "yes")

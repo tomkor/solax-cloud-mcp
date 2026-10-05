@@ -1,7 +1,7 @@
 """Tests for the G12w battery grid-charging planner."""
 
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -198,3 +198,49 @@ def test_settings_from_env_rejects_invalid(monkeypatch, env):
         monkeypatch.setenv(k, v)
     with pytest.raises(RuntimeError):
         Settings.from_env()
+
+
+from solax_cloud_mcp.automation import ExportSettings, compute_export_plan  # noqa: E402
+from solax_cloud_mcp.prices import PriceSlot  # noqa: E402
+
+EXPORT = ExportSettings(min_price_pln_kwh=1.0, max_power_kw=8.0, min_slot_kwh=0.2, price_multiplier=1.0, dry_run=True)
+
+
+def _slot(h, m, price):
+    start = _local(2026, 10, 6, h, m)
+    return PriceSlot(start=start, end=start + timedelta(minutes=15), price_pln_kwh=price)
+
+
+def test_export_sells_only_surplus_in_best_slots():
+    # Tuesday 17:00, horizon = 22:00 window; 5 h * 1 kWh house need, no PV -> reserve 5/0.9+1 = 6.56
+    now = _local(2026, 10, 6, 17, 0)
+    prices = [_slot(17, 0, 0.8), _slot(18, 0, 1.2), _slot(18, 15, 1.5), _slot(19, 0, 1.1), _slot(23, 0, 2.0)]
+    # SOC 60% -> (60-15)% * 21.2 = 9.54 kWh stored; surplus = 9.54 - 6.56 = 2.98
+    plan = compute_export_plan(_settings(), EXPORT, now, 60, {}, prices)
+    assert plan["reserveForHouse_kWh"] == 6.56
+    assert plan["surplus_kWh"] == 2.98
+    # 8 kW * 0.25 h = 2 kWh per slot: best slot 18:15 gets 2.0, then 18:00 gets 0.98; 23:00 is beyond horizon
+    assert [(s["start"][11:16], s["energy_kWh"]) for s in plan["slots"]] == [("18:00", 0.98), ("18:15", 2.0)]
+    assert plan["currentSlot"] == {"export": False}
+
+
+def test_export_current_slot_and_threshold():
+    now = _local(2026, 10, 6, 18, 5)
+    plan = compute_export_plan(_settings(), EXPORT, now, 100, {}, [_slot(18, 0, 1.3), _slot(18, 15, 0.99)])
+    assert plan["currentSlot"]["export"] is True
+    assert plan["currentSlot"]["power_kW"] == 8.0
+    assert len(plan["slots"]) == 1  # 0.99 below threshold
+
+
+def test_no_export_when_battery_needed_for_house():
+    now = _local(2026, 10, 6, 15, 0)
+    plan = compute_export_plan(_settings(), EXPORT, now, 30, {}, [_slot(18, 0, 3.0)])
+    assert plan["surplus_kWh"] == 0.0
+    assert plan["slots"] == []
+
+
+def test_export_dry_run_off_is_rejected(monkeypatch):
+    monkeypatch.setenv("EXPORT_MAX_POWER_KW", "8")
+    monkeypatch.setenv("EXPORT_DRY_RUN", "0")
+    with pytest.raises(RuntimeError, match="not supported"):
+        ExportSettings.from_env()

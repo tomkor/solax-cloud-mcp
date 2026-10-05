@@ -10,11 +10,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from .client import SolaxApiError
-from .automation import AutomationScheduler, Settings
-from .config import get_default_device_sn, is_automation_enabled, is_solcast_configured
+from .automation import AutomationScheduler, ExportSettings, Settings
+from .config import get_default_device_sn, is_automation_enabled, is_export_enabled, is_solcast_configured
+from .prices import PriceError
 from .forecast import SolcastError
 from .server import (
     HHMM_PATTERN,
+    get_energy_prices_impl,
     get_realtime_data_impl,
     get_solar_forecast_impl,
     set_battery_self_use_mode_impl,
@@ -34,12 +36,15 @@ def get_api_key() -> str:
 def _create_scheduler() -> AutomationScheduler | None:
     """Validate automation config at startup (fail fast) and build the scheduler if enabled."""
     if not is_automation_enabled():
+        if is_export_enabled():
+            raise RuntimeError("EXPORT_ENABLED=1 requires AUTOMATION_ENABLED=1")
         return None
     if not is_solcast_configured():
         raise RuntimeError("AUTOMATION_ENABLED=1 requires SOLCAST_API_KEY and SOLCAST_RESOURCE_IDS")
     if not get_default_device_sn():
         raise RuntimeError("AUTOMATION_ENABLED=1 requires SOLAX_DEVICE_SN")
-    return AutomationScheduler(Settings.from_env())
+    export = ExportSettings.from_env() if is_export_enabled() else None
+    return AutomationScheduler(Settings.from_env(), export)
 
 
 def create_app() -> FastAPI:
@@ -112,6 +117,9 @@ def create_app() -> FastAPI:
         if isinstance(e.__cause__, SolaxApiError):
             logger.error("SolaX API call failed: %s", e)
             return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="SolaX API request failed")
+        if isinstance(e.__cause__, PriceError):
+            logger.error("PSE price API call failed: %s", e)
+            return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="PSE price API request failed")
         if isinstance(e.__cause__, SolcastError):
             logger.error("Solcast API call failed: %s", e)
             return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Solcast API request failed")
@@ -144,6 +152,29 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Solcast is not configured")
         try:
             return await get_solar_forecast_impl(hours)
+        except ValueError as e:
+            raise to_http_error(e) from e
+
+    @app.get("/api/prices", dependencies=[Depends(verify_api_key)])
+    async def get_prices_endpoint(
+        hours: Annotated[int, Query(ge=1, le=48, description="Hours ahead")] = 24,
+    ) -> dict:
+        """RCE market prices (15-min, PLN/kWh net) from PSE. Requires bearer token."""
+        try:
+            return await get_energy_prices_impl(hours)
+        except ValueError as e:
+            raise to_http_error(e) from e
+
+    @app.post("/api/export/preview", dependencies=[Depends(verify_api_key)])
+    async def preview_export() -> dict:
+        """Export plan from current SOC, PV forecast and RCE prices. Never writes to the inverter."""
+        if not scheduler or not scheduler.export:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Export planner is not enabled")
+        try:
+            return await scheduler.export_plan()
+        except (SolcastError, PriceError, SolaxApiError) as e:
+            logger.error("Export preview failed: %s", e)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Upstream API request failed") from e
         except ValueError as e:
             raise to_http_error(e) from e
 

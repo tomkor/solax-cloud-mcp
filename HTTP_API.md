@@ -250,9 +250,11 @@ Content-Type: application/json
 
 **Parameters:**
 - `device_sn` (string, optional): Inverter serial number. If omitted, uses `SOLAX_DEVICE_SN` env var.
-- `min_soc` (integer, 10-100): Minimum SOC (%). Battery won't discharge below this. Default: `10`
-- `charge_upper_soc` (integer, 10-100): Maximum charging SOC (%). Battery won't charge above this. Default: `100`
-- `charge_from_grid_enable` (integer, 0/1): Allow charging from grid. `0`=disabled, `1`=enabled. Default: `1`
+- `min_soc` (integer, 10-100, **required**): Minimum SOC (%). Battery won't discharge below this.
+- `charge_upper_soc` (integer, 10-100, **required**): Maximum charging SOC (%). Battery won't charge above this.
+- `charge_from_grid_enable` (integer, 0/1, **required**): Allow charging from grid. `0`=disabled, `1`=enabled.
+
+`min_soc`, `charge_upper_soc` and `charge_from_grid_enable` have no defaults, so a request without them is rejected (`422`) instead of silently overwriting inverter settings. Time fields must match `HH:MM` (`00:00`–`23:59`). Upstream SolaX errors are returned as `502` with a generic message; details are logged on the server only.
 - `charge_start_time_period1` (string, optional): HH:MM format (e.g., `"06:00"`)
 - `charge_end_time_period1` (string, optional): HH:MM format
 - `discharge_start_time_period1` (string, optional): HH:MM format

@@ -1,9 +1,11 @@
 """MCP server for SolaX Developer Platform real-time data and control."""
 
+import re
+
 from mcp.server.fastmcp import FastMCP
 
 from .client import SolaxApiError, fetch_realtime_data, set_self_use_mode
-from .config import get_client_id, get_client_secret, get_default_device_sn
+from .config import get_client_id, get_client_secret, get_default_device_sn, is_write_enabled
 from .models import shape_realtime_response
 
 # Validate configuration at import time
@@ -12,6 +14,14 @@ CLIENT_SECRET = get_client_secret()
 
 # Initialize the MCP server
 server = FastMCP("solax-cloud")
+
+HHMM_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
+_HHMM_RE = re.compile(HHMM_PATTERN)
+
+
+def _validate_hhmm(name: str, value: str | None) -> None:
+    if value is not None and not _HHMM_RE.fullmatch(value):
+        raise ValueError(f"{name} must be in HH:MM format (00:00-23:59), got {value!r}")
 
 
 async def get_realtime_data_impl(device_sn: str | None = None) -> dict:
@@ -32,10 +42,11 @@ async def get_realtime_data_impl(device_sn: str | None = None) -> dict:
 
 
 async def set_battery_self_use_mode_impl(
+    *,
+    min_soc: int,
+    charge_upper_soc: int,
+    charge_from_grid_enable: int,
     device_sn: str | None = None,
-    min_soc: int = 10,
-    charge_upper_soc: int = 100,
-    charge_from_grid_enable: int = 1,
     charge_start_time_period1: str | None = None,
     charge_end_time_period1: str | None = None,
     discharge_start_time_period1: str | None = None,
@@ -61,6 +72,21 @@ async def set_battery_self_use_mode_impl(
         raise ValueError(
             f"min_soc ({min_soc}) cannot be greater than charge_upper_soc ({charge_upper_soc})"
         )
+    if charge_from_grid_enable not in (0, 1):
+        raise ValueError(f"charge_from_grid_enable must be 0 or 1, got {charge_from_grid_enable}")
+    if enable_time_period2 not in (0, 1):
+        raise ValueError(f"enable_time_period2 must be 0 or 1, got {enable_time_period2}")
+    for name, value in (
+        ("charge_start_time_period1", charge_start_time_period1),
+        ("charge_end_time_period1", charge_end_time_period1),
+        ("discharge_start_time_period1", discharge_start_time_period1),
+        ("discharge_end_time_period1", discharge_end_time_period1),
+        ("charge_start_time_period2", charge_start_time_period2),
+        ("charge_end_time_period2", charge_end_time_period2),
+        ("discharge_start_time_period2", discharge_start_time_period2),
+        ("discharge_end_time_period2", discharge_end_time_period2),
+    ):
+        _validate_hhmm(name, value)
 
     try:
         response = await set_self_use_mode(
@@ -118,12 +144,11 @@ async def get_realtime_data(device_sn: str | None = None) -> dict:
     return await get_realtime_data_impl(device_sn)
 
 
-@server.tool()
 async def set_battery_self_use_mode(
+    min_soc: int,
+    charge_upper_soc: int,
+    charge_from_grid_enable: int,
     device_sn: str | None = None,
-    min_soc: int = 10,
-    charge_upper_soc: int = 100,
-    charge_from_grid_enable: int = 1,
     charge_start_time_period1: str | None = None,
     charge_end_time_period1: str | None = None,
     discharge_start_time_period1: str | None = None,
@@ -147,10 +172,10 @@ async def set_battery_self_use_mode(
     - Prevent overnight charging from grid during expensive peak hours
 
     Args:
+        min_soc: Minimum SOC (%), range [10, 100]. Battery won't discharge below this. Required.
+        charge_upper_soc: Maximum charging SOC (%), range [10, 100]. Battery won't charge above this. Required.
+        charge_from_grid_enable: Allow charging from grid (0=no, 1=yes). Required.
         device_sn: Serial number of the inverter. If omitted, uses SOLAX_DEVICE_SN.
-        min_soc: Minimum SOC (%), range [10, 100]. Battery won't discharge below this. Default: 10%.
-        charge_upper_soc: Maximum charging SOC (%), range [10, 100]. Battery won't charge above this. Default: 100%.
-        charge_from_grid_enable: Allow charging from grid (0=no, 1=yes). Default: 1 (enabled).
         charge_start_time_period1: Optional start time for charging period 1 (HH:MM format, e.g., "06:00").
         charge_end_time_period1: Optional end time for charging period 1 (HH:MM format, e.g., "18:00").
         discharge_start_time_period1: Optional start time for discharge period 1 (HH:MM format).
@@ -182,6 +207,11 @@ async def set_battery_self_use_mode(
         discharge_start_time_period2=discharge_start_time_period2,
         discharge_end_time_period2=discharge_end_time_period2,
     )
+
+
+# Write tool changes physical inverter settings; expose it to the LLM only on explicit opt-in.
+if is_write_enabled():
+    server.tool()(set_battery_self_use_mode)
 
 
 def main() -> None:

@@ -48,3 +48,14 @@ def test_get_default_device_sn_missing(monkeypatch):
     """Test that get_default_device_sn returns None when not set."""
     monkeypatch.delenv("SOLAX_DEVICE_SN", raising=False)
     assert get_default_device_sn() is None
+
+
+@pytest.mark.parametrize("value,expected", [(None, False), ("", False), ("0", False), ("no", False), ("1", True), ("true", True), ("YES", True)])
+def test_is_write_enabled(monkeypatch, value, expected):
+    from solax_cloud_mcp.config import is_write_enabled
+
+    if value is None:
+        monkeypatch.delenv("SOLAX_ALLOW_WRITE", raising=False)
+    else:
+        monkeypatch.setenv("SOLAX_ALLOW_WRITE", value)
+    assert is_write_enabled() is expected

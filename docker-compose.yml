@@ -10,13 +10,15 @@ services:
         BUILDKIT_INLINE_CACHE: 1
     container_name: solax-cloud-http
     ports:
-      - "8000:8000"
+      # Published on localhost only by default. To reach it from the LAN set
+      # HTTP_BIND_ADDR to the Pi's LAN IP (prefer a TLS reverse proxy in front).
+      - "${HTTP_BIND_ADDR:-127.0.0.1}:8000:8000"
     environment:
       # SolaX API credentials (load from .env file)
       SOLAX_CLIENT_ID: ${SOLAX_CLIENT_ID}
       SOLAX_CLIENT_SECRET: ${SOLAX_CLIENT_SECRET}
       SOLAX_DEVICE_SN: ${SOLAX_DEVICE_SN}
-      # HTTP server config
+      # HTTP server config (0.0.0.0 inside the container; see ports for host exposure)
       TRANSPORT: http
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: 8000
@@ -24,7 +26,7 @@ services:
       HTTP_API_KEY: ${HTTP_API_KEY}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -39,6 +41,7 @@ services:
   #     SOLAX_CLIENT_ID: ${SOLAX_CLIENT_ID}
   #     SOLAX_CLIENT_SECRET: ${SOLAX_CLIENT_SECRET}
   #     SOLAX_DEVICE_SN: ${SOLAX_DEVICE_SN}
+  #     # SOLAX_ALLOW_WRITE: "1"   # expose set_battery_self_use_mode tool to the LLM
   #     TRANSPORT: stdio
   #   stdin_open: true
   #   tty: true

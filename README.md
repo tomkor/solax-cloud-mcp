@@ -96,6 +96,8 @@ Add this entry:
 
 Once registered, the `get_realtime_data` tool is available in your MCP toolset. Use it to query real-time inverter data.
 
+The `set_battery_self_use_mode` tool changes inverter settings and is **not exposed by default**, so an LLM (e.g. via prompt injection) cannot reconfigure the inverter. Set `SOLAX_ALLOW_WRITE=1` to enable it. Its `min_soc`, `charge_upper_soc` and `charge_from_grid_enable` arguments are required.
+
 ### Tool: `get_realtime_data`
 
 **Arguments:**

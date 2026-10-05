@@ -98,9 +98,9 @@ services:
     # Container name for easy reference
     container_name: solax-cloud-http
     
-    # Port mapping: expose port 8000 on the host
+    # Port mapping: localhost only by default; set HTTP_BIND_ADDR to the Pi's LAN IP to expose it
     ports:
-      - "8000:8000"
+      - "${HTTP_BIND_ADDR:-127.0.0.1}:8000:8000"
     
     # Environment variables (loaded from .env file)
     environment:
@@ -111,7 +111,7 @@ services:
       
       # HTTP server configuration
       TRANSPORT: http                    # Use HTTP mode (not MCP/stdio)
-      HTTP_HOST: 0.0.0.0                # Listen on all interfaces
+      HTTP_HOST: 0.0.0.0                # All interfaces inside the container; host exposure via ports
       HTTP_PORT: 8000                   # Port number
       HTTP_API_KEY: ${HTTP_API_KEY}     # Bearer token for authentication
     
@@ -120,7 +120,7 @@ services:
     
     # Health check: verify the server is running
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s           # Check every 30 seconds
       timeout: 10s            # Wait up to 10 seconds for response
       retries: 3              # Mark unhealthy after 3 failed checks
@@ -152,14 +152,16 @@ services:
 | `SOLAX_CLIENT_SECRET` | OAuth2 Client Secret from SolaX | `secret123xyz` |
 | `SOLAX_DEVICE_SN` | Inverter serial number (default device) | `X3ABCD0123` |
 | `HTTP_API_KEY` | Bearer token for API authentication | `YWJjMTIzaG...` |
-| `HTTP_HOST` | Network interface to bind to | `0.0.0.0` (all), `127.0.0.1` (localhost) |
+| `HTTP_HOST` | Interface the server binds to (default `127.0.0.1`; the Docker image sets `0.0.0.0`) | `0.0.0.0` (all), `127.0.0.1` (localhost) |
+| `HTTP_BIND_ADDR` | docker-compose: host address the port is published on (default `127.0.0.1`) | `192.168.1.10` |
+| `SOLAX_ALLOW_WRITE` | MCP mode: expose `set_battery_self_use_mode` tool to the LLM (default off) | `1` |
 | `HTTP_PORT` | Port number | `8000` |
 | `TRANSPORT` | Execution mode | `http` or `stdio` |
 
 **Health Check Explanation:**
 
 The health check runs every 30 seconds and:
-- Calls `curl -f http://localhost:8000/health`
+- Requests `http://localhost:8000/health` with Python's `urllib` (no `curl` in the image)
 - Expects a 200 HTTP response
 - Waits up to 10 seconds for a response
 - After 3 consecutive failures, marks the container as unhealthy (but doesn't stop it)
@@ -272,8 +274,11 @@ Then configure Claude to use the Docker container as the MCP server. The exact c
 
 ### Network Security
 
-- The HTTP server binds to `0.0.0.0:8000` by default (listens on all interfaces)
-- On your private LAN, this is acceptable, but keep your `HTTP_API_KEY` strong
+- Run directly, the HTTP server binds to `127.0.0.1` by default; set `HTTP_HOST=0.0.0.0` to listen on all interfaces
+- docker-compose publishes the port on `127.0.0.1` by default; set `HTTP_BIND_ADDR` to the Pi's LAN IP to reach it from other machines
+- Traffic is plain HTTP: the API key travels in cleartext on the LAN. Keep `HTTP_API_KEY` strong and prefer a TLS reverse proxy
+- The container runs as an unprivileged user (`uid 10001`)
+- `/docs`, `/redoc` and `/openapi.json` are disabled (no unauthenticated schema exposure)
 - For public exposure, use a reverse proxy (nginx/Caddy) with HTTPS and proper firewall rules
 - The API key is a bearer token in the `Authorization: Bearer <token>` header
 

@@ -1,38 +1,38 @@
 # Build stage
-FROM python:3.11-slim as builder
+FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:$PATH"
+# Install uv from its pinned official image (no curl | sh)
+COPY --from=ghcr.io/astral-sh/uv:0.8 /uv /bin/uv
 
 # Copy project files (excluding secrets via .dockerignore)
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 
-# Create virtual environment and install dependencies
-RUN /root/.cargo/bin/uv venv /app/.venv && \
-    /root/.cargo/bin/uv pip install -e . --python /app/.venv/bin/python
+# Install exactly the versions pinned in uv.lock (fails if lockfile is out of date)
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_LINK_MODE=copy
+RUN uv sync --frozen --no-dev --no-editable
 
 # Runtime stage - ARM64 optimized for Raspberry Pi 3
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install only runtime dependencies (no build tools)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Base image already ships ca-certificates; httpx uses certifi. Only add an unprivileged user.
+RUN useradd --system --uid 10001 --no-create-home app
 
-# Copy virtual environment from builder
+# Copy virtual environment (with the package installed non-editable)
 COPY --from=builder /app/.venv /app/.venv
-
-# Copy application source
-COPY src/ ./src/
 
 ENV PATH="/app/.venv/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
+# Inside the container listen on all interfaces; exposure is controlled by the port mapping
+ENV HTTP_HOST=0.0.0.0
+
+USER app
 
 # Health check for HTTP mode
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \

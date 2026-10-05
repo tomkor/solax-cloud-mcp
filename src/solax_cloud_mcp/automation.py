@@ -381,6 +381,18 @@ def compute_export_plan(
     }
 
 
+def live_house_load_kw(realtime: dict) -> float | None:
+    """House load from shaped realtime data: inverter AC output minus grid power (SolaX: + export, - import).
+
+    Realtime data is up to ~5 minutes old. Returns None when a value is missing.
+    """
+    phases = (realtime.get("ac") or {}).get("phases") or []
+    grid_w = (realtime.get("meter1") or {}).get("gridPower_W")
+    if not phases or grid_w is None or any(p.get("power_W") is None for p in phases):
+        return None
+    return max(0.0, (sum(p["power_W"] for p in phases) - grid_w) / 1000)
+
+
 def _pv_by_hour(forecast: dict, percentile: str) -> dict[datetime, float]:
     # Hourly entries are average kW over the hour == kWh in that hour
     return {datetime.fromisoformat(h["time"]): h["power_kW"][percentile] for h in forecast["hourly"]}
@@ -436,9 +448,12 @@ class AutomationScheduler:
             raise ValueError("Battery SOC not available from SolaX realtime data")
         forecast = await get_solar_forecast(hours=48)
         prices = await get_rce_prices()
-        return compute_export_plan(
+        plan = compute_export_plan(
             self.settings, self.export, now, float(soc), _pv_by_hour(forecast, self.settings.percentile), prices
         )
+        house = live_house_load_kw(realtime)
+        plan["liveHouseLoad_kW"] = round(house, 2) if house is not None else None
+        return plan
 
     async def apply_export(self, plan: dict) -> dict:
         """Send the current slot's export command, or leave remote control when not exporting.
@@ -452,7 +467,10 @@ class AutomationScheduler:
         export_now = slot["export"] and plan["socPercent"] > floor
         async with self._write_lock:
             if export_now:
-                watts = round(min(slot["dischargeSetpoint_kW"], self.export.max_power_kw) * 1000)
+                # AC-port setpoint: planned export plus the house load measured now (profile if unknown)
+                house = plan.get("liveHouseLoad_kW")
+                setpoint_kw = slot["dischargeSetpoint_kW"] if house is None else slot["expectedExport_kW"] + house
+                watts = round(min(setpoint_kw, self.export.max_power_kw) * 1000)
                 logger.warning("Export: discharge %d W until %d%% SOC on %s", watts, floor, device_sn)
                 self._remote_control = None
                 try:

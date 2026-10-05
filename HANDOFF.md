@@ -75,7 +75,7 @@ Also find out which endpoint the owner's manual 5 kW discharge used in the app, 
 Requirements:
 1. **Done:** `POST /api/battery/export-test {power_kw<=2, minutes<=5, stop_soc>=30}` with `X-Confirm: yes`, and `POST /api/battery/export-stop` (see HTTP_API.md). The mode was verified on hardware with a script; run the endpoint itself once more with the owner watching.
 2. **Done, ran live 2026-10-05 20:14 (5 kW: battery 4.7 kW, export 3.86 kW after ~1 min ramp; exit back to Self Use in ~30 s):** execution in `_export_loop` (`AutomationScheduler.apply_export`): when `currentSlot.export`, send `soc_target_control_mode` with the setpoint capped at `EXPORT_MAX_POWER_KW` and `targetSoc = recommendedExportFloorSoc`. Otherwise make sure the inverter is back in normal Self Use (exit VPP). It must be idempotent across restarts.
-3. **Open:** improve the setpoint with live house load (the AC-port target includes the house): at slot start, setpoint = planned export + current house load (from realtime data), capped.
+3. **Done:** improve the setpoint with live house load (`live_house_load_kw`: AC output minus `meter1.gridPower_W`, which is + export / - import per the SolaX docs; falls back to the profile when missing) (the AC-port target includes the house): at slot start, setpoint = planned export + current house load (from realtime data), capped.
 4. Safety (**done**, tested with fakes in `tests/test_automation.py`):
    - abort if SOC <= `recommendedExportFloorSoc` (the inverter also stops there by itself);
    - on any error (command or planner), call exit VPP; also on server shutdown;

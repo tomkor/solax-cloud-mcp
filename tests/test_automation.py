@@ -293,9 +293,9 @@ def _live_scheduler(max_power_kw=5.0):
     return AutomationScheduler(_settings(), export)
 
 
-def _plan(export, soc=60, floor=40, setpoint=5.0):
-    slot = {"export": True, "dischargeSetpoint_kW": setpoint} if export else {"export": False}
-    return {"currentSlot": slot, "socPercent": soc, "recommendedExportFloorSoc": floor}
+def _plan(export, soc=60, floor=40, setpoint=5.0, house=None):
+    slot = {"export": True, "dischargeSetpoint_kW": setpoint, "expectedExport_kW": setpoint - 0.5} if export else {"export": False}
+    return {"currentSlot": slot, "socPercent": soc, "recommendedExportFloorSoc": floor, "liveHouseLoad_kW": house}
 
 
 async def test_export_slot_discharges_to_floor_then_exits_once(remote):
@@ -329,3 +329,19 @@ def test_house_load_above_setpoint_means_no_export_in_that_slot():
     export = ExportSettings(min_price_pln_kwh=1.0, max_power_kw=3.0, min_slot_kwh=0.2, price_multiplier=1.0, dry_run=True)
     plan = compute_export_plan(settings, export, _local(2026, 10, 6, 20, 0), 100, {}, [_slot(20, 0, 2.0)])
     assert plan["slots"] == []
+
+
+async def test_setpoint_uses_live_house_load(remote):
+    scheduler = _live_scheduler(max_power_kw=5.0)
+    # Planned 3.5 kW export (profile load 0.5); washing machine running -> 2.1 kW measured
+    assert (await scheduler.apply_export(_plan(True, setpoint=4.0, house=0.9)))["setpoint_W"] == 4400
+    assert (await scheduler.apply_export(_plan(True, setpoint=4.0, house=2.1)))["setpoint_W"] == 5000  # capped
+
+
+def test_live_house_load_from_realtime():
+    rt = {"ac": {"phases": [{"power_W": 1300}, {"power_W": 1300}, {"power_W": 1400}]}, "meter1": {"gridPower_W": 3100}}
+    assert automation.live_house_load_kw(rt) == 0.9  # 4.0 kW out, 3.1 kW exported
+    rt["meter1"]["gridPower_W"] = -500  # importing 0.5 kW on top
+    assert automation.live_house_load_kw(rt) == 4.5
+    rt["meter1"]["gridPower_W"] = None
+    assert automation.live_house_load_kw(rt) is None

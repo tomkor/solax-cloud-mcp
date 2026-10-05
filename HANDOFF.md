@@ -10,6 +10,7 @@ Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast o
 - Production server: Proxmox LXC 109 `solax` at 192.168.100.50:8000, systemd unit `solax` (see DEPLOYMENT.md). The Raspberry Pi is not used.
 - Tariff: **G12w** (confirmed by the owner). Off-peak on weekdays: winter (1 Oct - 31 Mar) 22–06 and 13–15, summer (1 Apr - 30 Sep) 22–06 and 15–17. All day on weekends and Polish public holidays. Hourly net-billing. The code handles both seasons (`Tariff.windows_for`).
 - Microinstallation power declared to the DSO (OSD): **6.48 kW** (= PV). Connection power: 21 kW. Keep `EXPORT_MAX_POWER_KW` at or below 6.48 (now 5).
+- Net-billing deposit = RCE × **1.23** (confirmed by the owner): `EXPORT_PRICE_MULTIPLIER=1.23`, so `EXPORT_MIN_PRICE_PLN_KWH` applies to the multiplied price.
 - Export valuation: **RCE** (15-min market price from PSE). The SolaX app uses a TGE price list as an approximation, because RCE cannot be configured there.
 - Owner verified manually: battery discharge at **5 kW** works. The discharge setpoint is **battery output**: the house load is served first and only the rest is exported. So 3 kW with a 2.5 kW appliance running gives almost no export.
 - The SolaX Cloud built-in rule currently used is "discharge to 50%, max 5 kW, if export price > 1 PLN". It supports **only one condition (no AND)**, so it cannot combine the price threshold with a dynamic SOC floor. This is why the server should execute exports (see Task 3).
@@ -98,7 +99,6 @@ Nice-to-have: derive the profiles automatically from SolaX history (if the Devel
 
 ## Open questions for the owner
 
-- `EXPORT_PRICE_MULTIPLIER`: whether a coefficient (e.g. 1.23) applies to their net-billing deposit.
 - Whether to ask the DSO to raise the declared microinstallation power above 6.48 kW, so the battery can export faster.
 
 ## Conventions

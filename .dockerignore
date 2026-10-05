@@ -10,8 +10,8 @@ __pycache__
 .pytest_cache
 .claude
 context/
-README.md
 *.md
+!README.md
 .DS_Store
 .vscode
 .idea

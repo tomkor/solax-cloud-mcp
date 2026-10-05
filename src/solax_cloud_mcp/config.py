@@ -46,3 +46,12 @@ def get_default_device_sn() -> str | None:
         number (wifiSn) used by the legacy SolaX Cloud API.
     """
     return os.getenv("SOLAX_DEVICE_SN")
+
+
+def is_write_enabled() -> bool:
+    """Whether the MCP server should expose tools that change inverter settings.
+
+    Controlled by SOLAX_ALLOW_WRITE (1/true/yes). Disabled by default so an LLM
+    (e.g. via prompt injection) cannot reconfigure the inverter unless opted in.
+    """
+    return os.getenv("SOLAX_ALLOW_WRITE", "").strip().lower() in ("1", "true", "yes")

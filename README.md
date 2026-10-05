@@ -229,7 +229,7 @@ If the forecast or the SolaX call fails, the inverter keeps its previous setting
 - `GET /api/automation`: enabled/dry-run status, next run, last result.
 - `POST /api/automation/preview`: plan for the next window, computed now, never written.
 
-House consumption comes from `AUTOMATION_CONSUMPTION_PROFILE`, 24 hourly kWh values (or a flat `AUTOMATION_DAILY_CONSUMPTION_KWH`). An optional `AUTOMATION_WEEKEND_CONSUMPTION_PROFILE` / `AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH` applies on weekends and Polish public holidays.
+House consumption comes from `AUTOMATION_CONSUMPTION_PROFILE`, 24 hourly kWh values (or a flat `AUTOMATION_DAILY_CONSUMPTION_KWH`). An optional `AUTOMATION_WEEKEND_CONSUMPTION_PROFILE` / `AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH` applies on weekends and Polish public holidays. To compute both from real data (house load = AC output minus grid power, 5-minute samples from SolaX history), run `python -m solax_cloud_mcp.consumption --since YYYY-MM-DD` with the `.env` loaded; it prints the two lines for `.env`.
 
 See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
 

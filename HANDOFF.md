@@ -95,7 +95,7 @@ AUTOMATION_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.3,0.5,0.5,0.5,0.5,0.5,1.2,1
 AUTOMATION_WEEKEND_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.3,0.5,0.5,0.5,0.5,0.5,1.9,1.9,1.9,1.9,1.9,1.9,0.6,0.6,0.6,0.6,0.6,0.25,0.25  # 19.2 kWh, estimate
 ```
 
-Nice-to-have: derive the profiles automatically from SolaX history (if the Developer API exposes hourly load) instead of hand-written values.
+**Tool (done):** `python -m solax_cloud_mcp.consumption --since 2026-10-02` computes both profiles from SolaX history. Real data starts on Fri 2026-10-02. First run (2026-10-05): weekday 11.7 kWh/day from 1 day only (evening peak 18-22, not 11-17), weekend 18.9 kWh/day from 2 days. Re-run after about 2 weeks of data and put the output into `.env`.
 
 ## Open questions for the owner
 

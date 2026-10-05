@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://openapi-eu.solaxcloud.com"
 REALTIME_DATA_URL = f"{BASE_URL}/openapi/v2/device/realtime_data"
+HISTORY_DATA_URL = f"{BASE_URL}/openapi/v2/device/history_data"
 SET_SELF_USE_MODE_URL = f"{BASE_URL}/openapi/v2/device/inverter_work_mode/batch_set_spontaneity_self_use"
 # push_power/positive_or_negative_mode is accepted but ignored by the X3-NEO-LV (tested 2026-10-05); this mode works
 SOC_TARGET_URL = f"{BASE_URL}/openapi/v2/device/inverter_vpp_mode/soc_target_control_mode"
@@ -53,15 +54,6 @@ async def _request_realtime(
     Raises:
         SolaxApiError: on network errors, non-10000 code, or other failures.
     """
-    global _last_call_at
-
-    # Rate limiting
-    async with _rate_limit_lock:
-        elapsed = time.monotonic() - _last_call_at
-        if elapsed < MIN_INTERVAL_SECONDS:
-            await asyncio.sleep(MIN_INTERVAL_SECONDS - elapsed)
-        _last_call_at = time.monotonic()
-
     # Build query params
     params = {
         "snList": device_sn,
@@ -70,6 +62,26 @@ async def _request_realtime(
     }
     if request_sn_type is not None:
         params["requestSnType"] = request_sn_type
+
+    result = await _get_result(REALTIME_DATA_URL, params)
+    if not result:
+        # Empty result list most likely means device is offline/no data yet
+        return None
+    if isinstance(result, list) and len(result) > 0:
+        return result[0]
+    return None
+
+
+async def _get_result(url: str, params: dict):
+    """GET a data endpoint: rate limit, auth (with one retry on 10402), check code 10000, return `result`."""
+    global _last_call_at
+
+    # Rate limiting
+    async with _rate_limit_lock:
+        elapsed = time.monotonic() - _last_call_at
+        if elapsed < MIN_INTERVAL_SECONDS:
+            await asyncio.sleep(MIN_INTERVAL_SECONDS - elapsed)
+        _last_call_at = time.monotonic()
 
     # Get access token and make request
     try:
@@ -80,7 +92,7 @@ async def _request_realtime(
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             response = await client.get(
-                REALTIME_DATA_URL,
+                url,
                 params=params,
                 headers={"Authorization": f"bearer {token}"},
             )
@@ -113,7 +125,7 @@ async def _request_realtime(
 
             try:
                 response = await client.get(
-                    REALTIME_DATA_URL,
+                    url,
                     params=params,
                     headers={"Authorization": f"bearer {token}"},
                 )
@@ -134,14 +146,20 @@ async def _request_realtime(
         description = ERROR_CODE_DESCRIPTIONS.get(code, f"Unknown code {code}")
         raise SolaxApiError(f"API error {code}: {description}")
 
-    # Extract result list
-    result = body.get("result")
-    if not result:
-        # Empty result list most likely means device is offline/no data yet
-        return None
-    if isinstance(result, list) and len(result) > 0:
-        return result[0]
-    return None
+    return body.get("result")
+
+
+async def fetch_history(device_sn: str, start_ms: int, end_ms: int, interval_min: int = 5) -> list[dict]:
+    """Inverter history samples (W for residential) between two UTC ms timestamps, at most 12 h apart."""
+    params = {
+        "snList": device_sn,
+        "deviceType": DEVICE_TYPE_INVERTER,
+        "businessType": BUSINESS_TYPE_RESIDENTIAL,
+        "startTime": start_ms,
+        "endTime": end_ms,
+        "timeInterval": interval_min,
+    }
+    return await _get_result(HISTORY_DATA_URL, params) or []
 
 
 async def fetch_inverter_data(device_sn: str) -> dict:

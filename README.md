@@ -237,7 +237,7 @@ See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
 
 **Export planner** (`EXPORT_ENABLED=1`, requires battery automation): every 15 minutes it reads the current SOC, the PV forecast and RCE prices, then:
 1. Computes the battery **surplus**: energy above `AUTOMATION_MIN_SOC` minus what the house needs until the next off-peak window (consumption − PV, same model as the charge planner). Selling therefore never forces buying back at peak price.
-2. Allocates the surplus to the most expensive slots at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0), up to `EXPORT_MAX_POWER_KW` per slot.
+2. Allocates the surplus to the most expensive slots at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0). `EXPORT_MAX_POWER_KW` is the **battery discharge setpoint**: the house load is served first and only the rest goes to the grid. Per slot, `export = setpoint × 0.25 h − expected house load`. The plan shows `export_kWh`, `expectedHouseLoad_kWh` and the `dischargeSetpoint_kW` needed, which equals export plus load.
 
 `POST /api/export/preview` shows the plan. `GET /api/automation` shows the last plan under `export`.
 

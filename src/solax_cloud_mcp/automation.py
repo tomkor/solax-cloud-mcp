@@ -287,7 +287,11 @@ def compute_export_plan(
 
     Surplus = energy above the SOC reserve minus what the house needs until the next window (so selling
     never forces buying back at peak price). Surplus is allocated greedily to the highest-price slots at
-    or above the threshold, limited by max export power per slot.
+    or above the threshold.
+
+    The discharge setpoint is battery output: the house load is served first and only the rest is
+    exported. So per slot export = setpoint * 0.25 h - house load in that slot (already covered by the
+    reserve), and the setpoint for a partially used slot is export + expected house load.
     """
     horizon = _horizon_end(settings, now)
     reserve = _reserve_need(settings, now, horizon, pv_by_hour)
@@ -298,15 +302,19 @@ def compute_export_plan(
         s for s in prices
         if s.end > now and s.start < horizon and s.price_pln_kwh * export.price_multiplier >= export.min_price_pln_kwh
     ]
+    def slot_load(slot: PriceSlot) -> float:
+        return settings.consumption_profile[slot.start.astimezone(settings.tz).hour] * 0.25
+
     remaining = surplus
-    per_slot_max = export.max_power_kw * 0.25
     chosen = []
     for slot in sorted(candidates, key=lambda s: s.price_pln_kwh, reverse=True):
-        energy = min(per_slot_max, remaining)
+        energy = min(max(0.0, export.max_power_kw * 0.25 - slot_load(slot)), remaining)
         if energy < export.min_slot_kwh:
-            break
+            continue
         chosen.append((slot, energy))
         remaining -= energy
+        if remaining < export.min_slot_kwh:
+            break
 
     current = next(((s, e) for s, e in chosen if s.start <= now < s.end), None)
     tz = settings.tz
@@ -327,15 +335,21 @@ def compute_export_plan(
                 "start": s.start.astimezone(tz).isoformat(timespec="minutes"),
                 "end": s.end.astimezone(tz).isoformat(timespec="minutes"),
                 "price_PLN_kWh": r(s.price_pln_kwh * export.price_multiplier),
-                "energy_kWh": r(e),
-                "power_kW": r(e / 0.25),
+                "export_kWh": r(e),
+                "expectedHouseLoad_kWh": r(slot_load(s)),
+                "dischargeSetpoint_kW": r((e + slot_load(s)) / 0.25),
                 "revenue_PLN": r(e * s.price_pln_kwh * export.price_multiplier),
             }
             for s, e in sorted(chosen, key=lambda c: c[0].start)
         ],
         "plannedExport_kWh": r(surplus - remaining),
         "currentSlot": (
-            {"export": True, "power_kW": r(current[1] / 0.25), "price_PLN_kWh": r(current[0].price_pln_kwh * export.price_multiplier)}
+            {
+                "export": True,
+                "dischargeSetpoint_kW": r((current[1] + slot_load(current[0])) / 0.25),
+                "expectedExport_kW": r(current[1] / 0.25),
+                "price_PLN_kWh": r(current[0].price_pln_kwh * export.price_multiplier),
+            }
             if current
             else {"export": False}
         ),

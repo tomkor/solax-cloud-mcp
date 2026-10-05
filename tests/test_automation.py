@@ -219,8 +219,11 @@ def test_export_sells_only_surplus_in_best_slots():
     plan = compute_export_plan(_settings(), EXPORT, now, 60, {}, prices)
     assert plan["reserveForHouse_kWh"] == 6.56
     assert plan["surplus_kWh"] == 2.98
-    # 8 kW * 0.25 h = 2 kWh per slot: best slot 18:15 gets 2.0, then 18:00 gets 0.98; 23:00 is beyond horizon
-    assert [(s["start"][11:16], s["energy_kWh"]) for s in plan["slots"]] == [("18:00", 0.98), ("18:15", 2.0)]
+    # 8 kW * 0.25 h = 2 kWh from battery, house takes 0.25 -> 1.75 exported per slot.
+    # Best slot 18:15 gets 1.75, then 18:00 the remaining 1.23; 23:00 is beyond horizon
+    slots = [(s["start"][11:16], s["export_kWh"], s["dischargeSetpoint_kW"]) for s in plan["slots"]]
+    assert slots == [("18:00", 1.23, 5.94), ("18:15", 1.75, 8.0)]
+    assert plan["plannedExport_kWh"] == 2.98
     assert plan["currentSlot"] == {"export": False}
 
 
@@ -228,7 +231,8 @@ def test_export_current_slot_and_threshold():
     now = _local(2026, 10, 6, 18, 5)
     plan = compute_export_plan(_settings(), EXPORT, now, 100, {}, [_slot(18, 0, 1.3), _slot(18, 15, 0.99)])
     assert plan["currentSlot"]["export"] is True
-    assert plan["currentSlot"]["power_kW"] == 8.0
+    assert plan["currentSlot"]["dischargeSetpoint_kW"] == 8.0
+    assert plan["currentSlot"]["expectedExport_kW"] == 7.0  # 1 kW house load served first
     assert len(plan["slots"]) == 1  # 0.99 below threshold
 
 
@@ -244,3 +248,11 @@ def test_export_dry_run_off_is_rejected(monkeypatch):
     monkeypatch.setenv("EXPORT_DRY_RUN", "0")
     with pytest.raises(RuntimeError, match="not supported"):
         ExportSettings.from_env()
+
+
+def test_house_load_above_setpoint_means_no_export_in_that_slot():
+    # 3 kW evening load, 3 kW setpoint -> nothing left for the grid
+    settings = _settings(consumption_profile=(3.0,) * 24)
+    export = ExportSettings(min_price_pln_kwh=1.0, max_power_kw=3.0, min_slot_kwh=0.2, price_multiplier=1.0, dry_run=True)
+    plan = compute_export_plan(settings, export, _local(2026, 10, 6, 20, 0), 100, {}, [_slot(20, 0, 2.0)])
+    assert plan["slots"] == []

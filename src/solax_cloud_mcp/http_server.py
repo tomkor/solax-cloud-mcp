@@ -3,13 +3,15 @@
 import logging
 import os
 import secrets
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from .client import SolaxApiError
-from .config import is_solcast_configured
+from .automation import AutomationScheduler, Settings
+from .config import get_default_device_sn, is_automation_enabled, is_solcast_configured
 from .forecast import SolcastError
 from .server import (
     HHMM_PATTERN,
@@ -29,9 +31,32 @@ def get_api_key() -> str:
     return key
 
 
+def _create_scheduler() -> AutomationScheduler | None:
+    """Validate automation config at startup (fail fast) and build the scheduler if enabled."""
+    if not is_automation_enabled():
+        return None
+    if not is_solcast_configured():
+        raise RuntimeError("AUTOMATION_ENABLED=1 requires SOLCAST_API_KEY and SOLCAST_RESOURCE_IDS")
+    if not get_default_device_sn():
+        raise RuntimeError("AUTOMATION_ENABLED=1 requires SOLAX_DEVICE_SN")
+    return AutomationScheduler(Settings.from_env())
+
+
 def create_app() -> FastAPI:
     """Create and configure FastAPI application."""
+    scheduler = _create_scheduler()
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if scheduler:
+            scheduler.start()
+            logger.info("Battery automation started (dry_run=%s)", scheduler.settings.dry_run)
+        yield
+        if scheduler:
+            await scheduler.stop()
+
     app = FastAPI(
+        lifespan=lifespan,
         title="SolaX Cloud API",
         description="HTTP API for SolaX solar inverter data and control",
         version="0.1.0",
@@ -121,6 +146,22 @@ def create_app() -> FastAPI:
             return await get_solar_forecast_impl(hours)
         except ValueError as e:
             raise to_http_error(e) from e
+
+    @app.get("/api/automation", dependencies=[Depends(verify_api_key)])
+    async def get_automation_status() -> dict:
+        """Battery automation status: dry-run flag, next planned run and last result. Requires bearer token."""
+        return scheduler.status() if scheduler else {"enabled": False}
+
+    @app.post("/api/automation/preview", dependencies=[Depends(verify_api_key)])
+    async def preview_automation() -> dict:
+        """Compute the plan for the next off-peak window without writing to the inverter."""
+        if not scheduler:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Automation is not enabled")
+        try:
+            return await scheduler.preview()
+        except SolcastError as e:
+            logger.error("Solcast API call failed: %s", e)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Solcast API request failed") from e
 
     @app.post("/api/battery/self-use-mode", dependencies=[Depends(verify_api_key)])
     async def set_battery_self_use_mode_endpoint(req: SetBatterySelfUseModeRequest) -> dict:

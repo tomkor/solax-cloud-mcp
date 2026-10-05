@@ -94,3 +94,8 @@ def get_solcast_cache_minutes() -> int:
 def get_solar_timezone() -> str:
     """IANA timezone used for forecast day boundaries and timestamps (default UTC)."""
     return os.getenv("SOLAR_TIMEZONE") or "UTC"
+
+
+def is_automation_enabled() -> bool:
+    """Whether the forecast-driven battery planner runs inside the HTTP server (AUTOMATION_ENABLED=1)."""
+    return os.getenv("AUTOMATION_ENABLED", "").strip().lower() in ("1", "true", "yes")

@@ -329,6 +329,9 @@ def compute_export_plan(
         "storedAboveMinSoc_kWh": r(stored),
         "reserveForHouse_kWh": r(reserve),
         "surplus_kWh": r(surplus),
+        # SOC floor to use in a price-based export rule (e.g. SolaX Cloud "discharge to X% if price > Y")
+        # so that selling never cuts into what the house needs until the next off-peak window
+        "recommendedExportFloorSoc": min(100, settings.min_soc + math.ceil(reserve / settings.capacity_kwh * 100)),
         "minPrice_PLN_kWh": export.min_price_pln_kwh,
         "slots": [
             {

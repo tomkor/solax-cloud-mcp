@@ -218,6 +218,7 @@ def test_export_sells_only_surplus_in_best_slots():
     # SOC 60% -> (60-15)% * 21.2 = 9.54 kWh stored; surplus = 9.54 - 6.56 = 2.98
     plan = compute_export_plan(_settings(), EXPORT, now, 60, {}, prices)
     assert plan["reserveForHouse_kWh"] == 6.56
+    assert plan["recommendedExportFloorSoc"] == 15 + 31  # 6.56 / 21.2 = 30.9% -> 31
     assert plan["surplus_kWh"] == 2.98
     # 8 kW * 0.25 h = 2 kWh from battery, house takes 0.25 -> 1.75 exported per slot.
     # Best slot 18:15 gets 1.75, then 18:00 the remaining 1.23; 23:00 is beyond horizon

@@ -87,6 +87,13 @@ class Tariff:
         return any((s <= h < e) if s < e else (h >= s or h < e) for s, e in self.windows)
 
 
+def _parse_profile(raw: str, name: str) -> tuple[float, ...]:
+    profile = tuple(float(x) for x in raw.split(","))
+    if len(profile) != 24:
+        raise RuntimeError(f"{name} must have 24 comma-separated kWh values")
+    return profile
+
+
 @dataclass(frozen=True)
 class Settings:
     tz: ZoneInfo
@@ -100,6 +107,15 @@ class Settings:
     percentile: str
     lead_minutes: int
     dry_run: bool
+    # Used on weekends and Polish public holidays; falls back to consumption_profile
+    weekend_profile: tuple[float, ...] | None = None
+
+    def load_kwh(self, local_hour: datetime) -> float:
+        """Expected house consumption (kWh) in the local hour starting at `local_hour`."""
+        d = local_hour.date()
+        if self.weekend_profile and (d.weekday() >= 5 or d in polish_holidays(d.year)):
+            return self.weekend_profile[local_hour.hour]
+        return self.consumption_profile[local_hour.hour]
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -113,15 +129,22 @@ class Settings:
         profile_raw = env("AUTOMATION_CONSUMPTION_PROFILE")
         daily_raw = env("AUTOMATION_DAILY_CONSUMPTION_KWH")
         if profile_raw:
-            profile = tuple(float(x) for x in profile_raw.split(","))
-            if len(profile) != 24:
-                raise RuntimeError("AUTOMATION_CONSUMPTION_PROFILE must have 24 comma-separated kWh values")
+            profile = _parse_profile(profile_raw, "AUTOMATION_CONSUMPTION_PROFILE")
         elif daily_raw:
             profile = (float(daily_raw) / 24,) * 24
         else:
             raise RuntimeError(
                 "Set AUTOMATION_DAILY_CONSUMPTION_KWH or AUTOMATION_CONSUMPTION_PROFILE when AUTOMATION_ENABLED=1"
             )
+
+        weekend_raw = env("AUTOMATION_WEEKEND_CONSUMPTION_PROFILE")
+        weekend_daily = env("AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH")
+        if weekend_raw:
+            weekend_profile = _parse_profile(weekend_raw, "AUTOMATION_WEEKEND_CONSUMPTION_PROFILE")
+        elif weekend_daily:
+            weekend_profile = (float(weekend_daily) / 24,) * 24
+        else:
+            weekend_profile = None
 
         percentile = env("AUTOMATION_FORECAST_PERCENTILE", "p50")
         if percentile not in ("p10", "p50", "p90"):
@@ -153,6 +176,7 @@ class Settings:
             lead_minutes=int(env("AUTOMATION_LEAD_MINUTES", "10")),
             # Safe default: log decisions only, never write to the inverter unless explicitly disabled
             dry_run=env("AUTOMATION_DRY_RUN", "1") != "0",
+            weekend_profile=weekend_profile,
         )
 
 
@@ -199,7 +223,7 @@ def compute_plan(settings: Settings, trigger: Trigger, pv_by_hour: dict[datetime
     pv_total = load_total = running = peak_deficit = 0.0
     for hour in hours:
         pv = pv_by_hour.get(hour, 0.0)
-        load = settings.consumption_profile[hour.hour]
+        load = settings.load_kwh(hour)
         pv_total += pv
         load_total += load
         running += load - pv
@@ -269,7 +293,7 @@ def _reserve_need(settings: Settings, start: datetime, end: datetime, pv_by_hour
     hour = start.astimezone(settings.tz).replace(minute=0, second=0, microsecond=0)
     running = peak = 0.0
     while hour < end:
-        running += settings.consumption_profile[hour.hour] - pv_by_hour.get(hour, 0.0)
+        running += settings.load_kwh(hour) - pv_by_hour.get(hour, 0.0)
         peak = max(peak, running)
         hour += timedelta(hours=1)
     return peak / settings.efficiency + settings.safety_margin_kwh if peak > 0 else 0.0
@@ -303,7 +327,7 @@ def compute_export_plan(
         if s.end > now and s.start < horizon and s.price_pln_kwh * export.price_multiplier >= export.min_price_pln_kwh
     ]
     def slot_load(slot: PriceSlot) -> float:
-        return settings.consumption_profile[slot.start.astimezone(settings.tz).hour] * 0.25
+        return settings.load_kwh(slot.start.astimezone(settings.tz)) * 0.25
 
     remaining = surplus
     chosen = []

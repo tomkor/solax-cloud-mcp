@@ -170,6 +170,20 @@ async def test_preview_never_writes(fake_io):
     assert fake_io == []
 
 
+def test_weekend_and_holiday_profile():
+    s = _settings(weekend_profile=(2.0,) * 24)
+    assert s.load_kwh(_local(2026, 10, 6, 12)) == 1.0  # Tuesday
+    assert s.load_kwh(_local(2026, 10, 10, 12)) == 2.0  # Saturday
+    assert s.load_kwh(_local(2026, 11, 11, 12)) == 2.0  # Independence Day (Wednesday)
+    assert _settings().load_kwh(_local(2026, 10, 10, 12)) == 1.0  # no weekend profile -> weekday
+
+
+def test_export_reserve_uses_weekend_profile():
+    # Saturday 17:00, horizon = 22:00 window: 5 h * 2 kWh weekend load -> 10/0.9 + 1 = 12.11
+    plan = compute_export_plan(_settings(weekend_profile=(2.0,) * 24), EXPORT, _local(2026, 10, 10, 17, 0), 100, {}, [])
+    assert plan["reserveForHouse_kWh"] == 12.11
+
+
 def test_settings_from_env(monkeypatch):
     monkeypatch.setenv("BATTERY_CAPACITY_KWH", "21.2")
     monkeypatch.setenv("AUTOMATION_DAILY_CONSUMPTION_KWH", "12")
@@ -179,6 +193,9 @@ def test_settings_from_env(monkeypatch):
     assert s.dry_run is True  # safe default
     assert s.consumption_profile == (0.5,) * 24
     assert s.tariff.windows == ((22, 6), (13, 15))
+    assert s.weekend_profile is None
+    monkeypatch.setenv("AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH", "19.2")
+    assert Settings.from_env().weekend_profile == pytest.approx((0.8,) * 24)
 
 
 @pytest.mark.parametrize(

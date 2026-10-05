@@ -25,7 +25,7 @@ Work on `export-planner`: it contains all four. Tests: `uv sync && uv run pytest
 
 ## Task 1: verify live data (read-only, safe)
 
-1. Copy `.env.example` to `.env` and fill in `SOLAX_*`, `HTTP_API_KEY`, `SOLCAST_*`, `SOLAR_TIMEZONE=Europe/Warsaw`, `BATTERY_CAPACITY_KWH=21.2`, `AUTOMATION_ENABLED=1`, `AUTOMATION_DAILY_CONSUMPTION_KWH=<ask owner>` (or a 24-value profile), `EXPORT_ENABLED=1`, `EXPORT_MAX_POWER_KW=5`.
+1. Copy `.env.example` to `.env` and fill in `SOLAX_*`, `HTTP_API_KEY`, `SOLCAST_*`, `SOLAR_TIMEZONE=Europe/Warsaw`, `BATTERY_CAPACITY_KWH=21.2`, `AUTOMATION_ENABLED=1`, the consumption profiles from the "Consumption" section, `EXPORT_ENABLED=1`, `EXPORT_MAX_POWER_KW=5`.
 2. Start the server: `set -a; source .env; set +a; TRANSPORT=http uv run python -m solax_cloud_mcp`
 3. Check each endpoint (`Authorization: Bearer $HTTP_API_KEY`):
    - `POST /api/realtime-data {}`: battery `soc_percent` is present and the sign of `chargeDischargePower_W` is known (discharge = negative or positive?).
@@ -68,9 +68,19 @@ Requirements:
    - never let the charge planner and the export loop write at the same time (shared asyncio lock).
 5. Once the server exports reliably, the owner should **disable the SolaX Cloud price rule** so the two do not fight.
 
+## Consumption (from the owner)
+
+About **15 kWh/day**, mostly **11:00–17:00**. Weekends are higher (laundry, cleaning). Starting profiles, to refine from real SolaX history data (hourly house load):
+
+```bash
+AUTOMATION_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.3,0.5,0.5,0.5,0.5,0.5,1.2,1.2,1.2,1.2,1.2,1.2,0.6,0.6,0.6,0.6,0.6,0.25,0.25          # 15.0 kWh
+AUTOMATION_WEEKEND_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.3,0.5,0.5,0.5,0.5,0.5,1.9,1.9,1.9,1.9,1.9,1.9,0.6,0.6,0.6,0.6,0.6,0.25,0.25  # 19.2 kWh, estimate
+```
+
+Nice-to-have: derive the profiles automatically from SolaX history (if the Developer API exposes hourly load) instead of hand-written values.
+
 ## Open questions for the owner
 
-- Daily consumption, or better an hourly profile (`AUTOMATION_CONSUMPTION_PROFILE`).
 - Microinstallation power declared to the DSO (OSD). It caps export power; target is 10 kW (the inverter allows 12).
 - `EXPORT_PRICE_MULTIPLIER`: whether a coefficient (e.g. 1.23) applies to their net-billing deposit.
 - Whether their DSO's G12w hours are exactly 22–06 and 13–15 (`TARIFF_OFFPEAK_WINDOWS`).

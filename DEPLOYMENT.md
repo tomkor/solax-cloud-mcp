@@ -17,7 +17,8 @@ apt-get install -y curl ca-certificates rsync
 useradd --system --create-home --home-dir /opt/solax --shell /usr/sbin/nologin solax
 curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 
-# From the dev machine: copy tracked files and .env (set HTTP_HOST=0.0.0.0 in it)
+# From the dev machine: copy tracked files and .env
+# (in it set HTTP_HOST=0.0.0.0 and SOLCAST_CACHE_FILE=/opt/solax/solcast-cache.json)
 git ls-files | rsync -a --files-from=- ./ root@<lxc-ip>:/opt/solax/app/
 rsync -a .env root@<lxc-ip>:/opt/solax/app/.env
 

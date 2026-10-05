@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from . import config
 from .client import SolaxApiError, discharge_to_soc, exit_vpp_mode
-from .forecast import get_solar_forecast
+from .forecast import SolcastError, get_solar_forecast
 from .prices import PriceSlot, get_rce_prices
 from .server import get_realtime_data_impl, set_battery_self_use_mode_impl
 
@@ -459,11 +459,15 @@ class AutomationScheduler:
         soc = battery.get("soc_percent")
         if soc is None:
             raise ValueError("Battery SOC not available from SolaX realtime data")
-        forecast = await get_solar_forecast(hours=48)
+        try:
+            pv_by_hour = _pv_by_hour(await get_solar_forecast(hours=48), self.settings.percentile)
+        except SolcastError as e:
+            # Assume no PV: the house reserve only grows, so selling stays safe (e.g. Solcast daily limit)
+            logger.warning("Export planner without PV forecast (assuming 0 kW): %s", e)
+            pv_by_hour = None
         prices = await get_rce_prices()
-        plan = compute_export_plan(
-            self.settings, self.export, now, float(soc), _pv_by_hour(forecast, self.settings.percentile), prices
-        )
+        plan = compute_export_plan(self.settings, self.export, now, float(soc), pv_by_hour or {}, prices)
+        plan["pvForecastAvailable"] = pv_by_hour is not None
         house = live_house_load_kw(realtime)
         plan["liveHouseLoad_kW"] = round(house, 2) if house is not None else None
         return plan

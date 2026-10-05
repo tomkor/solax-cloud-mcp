@@ -361,3 +361,21 @@ def test_next_trigger_uses_summer_windows():
     s = _settings()
     t = next_trigger(s, _local(2027, 4, 1, 10))  # Thursday in summer
     assert (t.window, t.window_start.hour) == ((15, 17), 15)
+
+
+async def test_export_plan_without_solcast_assumes_no_pv(monkeypatch):
+    async def no_forecast(hours):
+        raise automation.SolcastError("rate limit")
+
+    async def realtime(_):
+        return {"battery": {"soc_percent": 90}}
+
+    async def prices():
+        return []
+
+    monkeypatch.setattr(automation, "get_solar_forecast", no_forecast)
+    monkeypatch.setattr(automation, "get_realtime_data_impl", realtime)
+    monkeypatch.setattr(automation, "get_rce_prices", prices)
+    plan = await AutomationScheduler(_settings(), EXPORT).export_plan(_local(2026, 10, 6, 18, 0))
+    assert plan["pvForecastAvailable"] is False
+    assert plan["reserveForHouse_kWh"] == 5.44  # 18-22: 4 h * 1 kWh / 0.9 + 1, no PV

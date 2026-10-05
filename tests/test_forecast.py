@@ -34,6 +34,8 @@ def solcast_env(monkeypatch):
     monkeypatch.setenv("SOLCAST_RESOURCE_IDS", "site-a")
     monkeypatch.setenv("SOLAR_TIMEZONE", "Europe/Warsaw")
     monkeypatch.setattr(forecast, "_cache", {})
+    monkeypatch.setattr(forecast, "_cache_loaded", False)
+    monkeypatch.delenv("SOLCAST_CACHE_FILE", raising=False)
 
 
 def test_shape_groups_by_local_day_and_hour():
@@ -109,3 +111,21 @@ async def test_error_without_cache_raises():
     respx.get(URL_A).mock(return_value=httpx.Response(429))
     with pytest.raises(SolcastError, match="rate limit"):
         await forecast.get_solar_forecast()
+
+
+@respx.mock
+async def test_cache_file_survives_restart(monkeypatch, tmp_path):
+    """A restart must not spend one of the ~10 daily Solcast calls."""
+    monkeypatch.setenv("SOLCAST_CACHE_FILE", str(tmp_path / "solcast.json"))
+    route = respx.get(URL_A).mock(
+        return_value=httpx.Response(200, json={"forecasts": [_period("2099-01-01T12:00:00Z", 1.0)]})
+    )
+    await forecast.get_solar_forecast()
+
+    # Simulate a new process: empty memory cache, file not loaded yet
+    monkeypatch.setattr(forecast, "_cache", {})
+    monkeypatch.setattr(forecast, "_cache_loaded", False)
+    result = await forecast.get_solar_forecast()
+
+    assert route.call_count == 1
+    assert result["days"][0]["energy_kWh"]["p50"] == 0.5

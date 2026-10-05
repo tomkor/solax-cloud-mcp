@@ -91,6 +91,11 @@ def get_solcast_cache_minutes() -> int:
     return int(os.getenv("SOLCAST_CACHE_MINUTES") or "180")
 
 
+def get_solcast_cache_file() -> str | None:
+    """Optional JSON file that keeps the Solcast cache across restarts (each restart would cost a call)."""
+    return os.getenv("SOLCAST_CACHE_FILE") or None
+
+
 def get_solar_timezone() -> str:
     """IANA timezone used for forecast day boundaries and timestamps (default UTC)."""
     return os.getenv("SOLAR_TIMEZONE") or "UTC"

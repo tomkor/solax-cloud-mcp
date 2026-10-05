@@ -63,3 +63,28 @@ async def test_persistent_10402_after_retry_raises_api_error(monkeypatch):
 
     with pytest.raises(client.SolaxApiError, match="10402"):
         await client.fetch_inverter_data("X3ABCD0123")
+
+
+@respx.mock
+async def test_discharge_to_soc_sends_negative_power_and_stop_soc(monkeypatch):
+    monkeypatch.setattr(auth, "get_access_token", _fake_token_source(["token"]))
+    route = respx.post(client.SOC_TARGET_URL).mock(
+        return_value=httpx.Response(200, json={"code": 10000, "result": {"SN1": {"status": 3}}})
+    )
+
+    await client.discharge_to_soc("SN1", 1500, 85)
+
+    sent = route.calls[0].request.content.replace(b" ", b"")
+    assert b'"chargeDischargPower":-1500' in sent
+    assert b'"targetSoc":85' in sent
+
+
+@respx.mock
+@pytest.mark.parametrize("result", [{"SN1": {"status": 1}}, {"SN1": {"status": 2}}, {}, []])
+async def test_command_not_delivered_raises(monkeypatch, result):
+    """Code 10000 only means the platform accepted the request; an offline or failed device must raise."""
+    monkeypatch.setattr(auth, "get_access_token", _fake_token_source(["token"]))
+    respx.post(client.EXIT_VPP_URL).mock(return_value=httpx.Response(200, json={"code": 10000, "result": result}))
+
+    with pytest.raises(client.SolaxApiError, match="not delivered"):
+        await client.exit_vpp_mode("SN1")

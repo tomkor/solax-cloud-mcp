@@ -454,6 +454,45 @@ Authorization: Bearer YOUR_API_KEY
 - Data is cached (`SOLCAST_CACHE_MINUTES`, default 180) because Solcast hobbyist accounts allow ~10 calls/day. `stale: true` means the latest refresh failed and cached data is returned.
 - Solcast failures return `502` with a generic message; details are logged on the server.
 
+---
+
+### 5. Export Test (manual battery discharge)
+
+Discharge the battery for a few minutes to test export control. **This writes to the inverter.** It uses SolaX remote control (`soc_target_control_mode`) on `SOLAX_DEVICE_SN`.
+
+**Request:**
+```http
+POST /api/battery/export-test HTTP/1.1
+Authorization: Bearer YOUR_API_KEY
+X-Confirm: yes
+Content-Type: application/json
+
+{"power_kw": 1.5, "minutes": 2, "stop_soc": 85}
+```
+
+- `power_kw` (number, > 0, max 2): discharge power at the inverter AC output. The house load is served first and only the rest is exported.
+- `minutes` (integer, 1-5): test duration. The server exits remote control after this time.
+- `stop_soc` (integer, 30-100): the inverter stops discharging at this SOC by itself, even if the server is down. If it is not below the current SOC, the inverter exits the mode right away.
+- Without `X-Confirm: yes` the server returns `400` and sends nothing.
+
+**Response (200 OK):**
+```json
+{"dischargeSetpoint_W": 1500, "stopSoc": 85, "durationSeconds": 120, "result": {"X3******01": {"status": 3}}}
+```
+
+- If the command fails, the server sends the exit right away and returns `502`.
+
+### 6. Export Stop
+
+Stop any remote-control command now. The inverter returns to its normal work mode (e.g. Self Use).
+
+```http
+POST /api/battery/export-stop HTTP/1.1
+Authorization: Bearer YOUR_API_KEY
+```
+
+**Response (200 OK):** `{"stopped": true}`
+
 ## Common Patterns
 
 ### Polling for Real-Time Updates

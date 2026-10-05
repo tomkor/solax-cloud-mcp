@@ -220,3 +220,65 @@ def test_export_requires_automation(monkeypatch):
     monkeypatch.delenv("AUTOMATION_ENABLED", raising=False)
     with pytest.raises(RuntimeError, match="AUTOMATION_ENABLED"):
         http_server.create_app()
+
+
+@pytest.fixture
+def vpp(monkeypatch):
+    """Capture remote-control commands instead of hitting the SolaX API."""
+    recorded = {"push": [], "exit": [], "push_error": None}
+
+    async def fake_push(device_sn, discharge_w, stop_soc):
+        recorded["push"].append((device_sn, discharge_w, stop_soc))
+        if recorded["push_error"]:
+            raise recorded["push_error"]
+        return {"code": 10000, "result": {device_sn: {"status": 3}}}
+
+    async def fake_exit(device_sn):
+        recorded["exit"].append(device_sn)
+        return {"code": 10000}
+
+    monkeypatch.setenv("SOLAX_DEVICE_SN", "SN1")
+    monkeypatch.setattr(http_server, "discharge_to_soc", fake_push)
+    monkeypatch.setattr(http_server, "exit_vpp_mode", fake_exit)
+    return recorded
+
+
+CONFIRM = {**AUTH, "X-Confirm": "yes"}
+
+
+def test_export_test_requires_confirm_header(api, vpp):
+    resp = api.post("/api/battery/export-test", json={"power_kw": 1, "minutes": 1, "stop_soc": 80}, headers=AUTH)
+    assert resp.status_code == 400
+    assert vpp["push"] == []
+
+
+@pytest.mark.parametrize("body", [
+        {"power_kw": 2.5, "minutes": 1, "stop_soc": 80},
+        {"power_kw": 1, "minutes": 6, "stop_soc": 80},
+        {"power_kw": 0, "minutes": 1, "stop_soc": 80},
+        {"power_kw": 1, "minutes": 1, "stop_soc": 29},
+        {"power_kw": 1, "minutes": 1},
+    ])
+def test_export_test_enforces_hard_caps(api, vpp, body):
+    assert api.post("/api/battery/export-test", json=body, headers=CONFIRM).status_code == 422
+    assert vpp["push"] == []
+
+
+def test_export_test_sends_capped_discharge(api, vpp):
+    resp = api.post("/api/battery/export-test", json={"power_kw": 1.5, "minutes": 2, "stop_soc": 85}, headers=CONFIRM)
+    assert resp.status_code == 200
+    assert vpp["push"] == [("SN1", 1500, 85)]
+    assert resp.json()["durationSeconds"] == 120
+
+
+def test_export_test_failure_restores_normal_mode(api, vpp):
+    vpp["push_error"] = SolaxApiError("boom")
+    resp = api.post("/api/battery/export-test", json={"power_kw": 1, "minutes": 1, "stop_soc": 80}, headers=CONFIRM)
+    assert resp.status_code == 502
+    assert "boom" not in resp.text
+    assert vpp["exit"] == ["SN1"]
+
+
+def test_export_stop_exits_remote_control(api, vpp):
+    assert api.post("/api/battery/export-stop", headers=AUTH).json() == {"stopped": True}
+    assert vpp["exit"] == ["SN1"]

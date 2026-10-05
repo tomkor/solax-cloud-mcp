@@ -1,5 +1,6 @@
 """FastAPI HTTP server for SolaX Developer Platform API."""
 
+import asyncio
 import logging
 import os
 import secrets
@@ -9,7 +10,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from .client import SolaxApiError
+from .client import SolaxApiError, discharge_to_soc, exit_vpp_mode
 from .automation import AutomationScheduler, ExportSettings, Settings
 from .config import get_default_device_sn, is_automation_enabled, is_export_enabled, is_solcast_configured
 from .prices import PriceError
@@ -23,6 +24,12 @@ from .server import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Hard caps for the manual export test (POST /api/battery/export-test)
+EXPORT_TEST_MAX_KW = 2.0
+EXPORT_TEST_MAX_MINUTES = 5
+# The inverter stops by itself at stop_soc even if the server dies; never let a test go below this
+EXPORT_TEST_MIN_STOP_SOC = 30
 
 
 def get_api_key() -> str:
@@ -111,6 +118,11 @@ def create_app() -> FastAPI:
         charge_end_time_period2: str | None = Field(None, pattern=HHMM_PATTERN, description="End time (HH:MM format)")
         discharge_start_time_period2: str | None = Field(None, pattern=HHMM_PATTERN, description="Start time (HH:MM format)")
         discharge_end_time_period2: str | None = Field(None, pattern=HHMM_PATTERN, description="End time (HH:MM format)")
+
+    class ExportTestRequest(BaseModel):
+        power_kw: float = Field(..., gt=0, le=EXPORT_TEST_MAX_KW, description="Battery discharge power (kW)")
+        minutes: int = Field(..., ge=1, le=EXPORT_TEST_MAX_MINUTES, description="Test duration (minutes)")
+        stop_soc: int = Field(..., ge=EXPORT_TEST_MIN_STOP_SOC, le=100, description="Inverter stops discharging at this SOC (%)")
 
     def to_http_error(e: ValueError) -> HTTPException:
         """Map impl errors: validation -> 400 with detail; upstream SolaX failure -> 502, details only in logs."""
@@ -218,6 +230,73 @@ def create_app() -> FastAPI:
             )
         except ValueError as e:
             raise to_http_error(e) from e
+
+    pending_restore: list[asyncio.Task] = []  # at most one scheduled exit of remote control
+
+    def cancel_pending_restore() -> None:
+        while pending_restore:
+            pending_restore.pop().cancel()
+
+    async def restore_normal_mode(device_sn: str) -> bool:
+        """Exit remote control so the inverter returns to its normal work mode. Never raises."""
+        try:
+            await exit_vpp_mode(device_sn)
+        except SolaxApiError as e:
+            logger.error("Exit remote control failed for %s: %s", device_sn, e)
+            return False
+        logger.warning("Exit remote control sent to %s", device_sn)
+        return True
+
+    async def restore_after(device_sn: str, delay_s: int) -> None:
+        await asyncio.sleep(delay_s)
+        await restore_normal_mode(device_sn)
+
+    def require_device_sn() -> str:
+        device_sn = get_default_device_sn()
+        if not device_sn:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SOLAX_DEVICE_SN is not set")
+        return device_sn
+
+    @app.post("/api/battery/export-test", dependencies=[Depends(verify_api_key)])
+    async def export_test(req: ExportTestRequest, x_confirm: Annotated[str, Header()] = "") -> dict:
+        """Manually discharge the battery for a few minutes to test export control.
+
+        Requires the header `X-Confirm: yes`. The server exits remote control after `minutes`;
+        the inverter also stops by itself at `stop_soc`, in case the server is down.
+        """
+        if x_confirm != "yes":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Header X-Confirm: yes is required")
+        device_sn = require_device_sn()
+        discharge_w = round(req.power_kw * 1000)
+        duration_s = req.minutes * 60
+
+        cancel_pending_restore()
+        logger.warning(
+            "Export test: discharge %d W for %d s, stop at %d%% SOC, on %s", discharge_w, duration_s, req.stop_soc, device_sn
+        )
+        try:
+            response = await discharge_to_soc(device_sn, discharge_w, req.stop_soc)
+        except SolaxApiError as e:
+            logger.error("Export test command failed: %s", e)
+            await restore_normal_mode(device_sn)
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="SolaX API request failed") from e
+
+        pending_restore.append(asyncio.create_task(restore_after(device_sn, duration_s)))
+        return {
+            "dischargeSetpoint_W": discharge_w,
+            "stopSoc": req.stop_soc,
+            "durationSeconds": duration_s,
+            "result": response.get("result"),
+        }
+
+    @app.post("/api/battery/export-stop", dependencies=[Depends(verify_api_key)])
+    async def export_stop() -> dict:
+        """Stop any remote-control command now: the inverter returns to its normal work mode."""
+        device_sn = require_device_sn()
+        cancel_pending_restore()
+        if not await restore_normal_mode(device_sn):
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="SolaX API request failed")
+        return {"stopped": True}
 
     return app
 

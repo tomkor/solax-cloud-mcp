@@ -1,6 +1,7 @@
 """HTTP client for SolaX Developer Platform API."""
 
 import asyncio
+import logging
 import time
 
 import httpx
@@ -8,14 +9,22 @@ import httpx
 from . import auth
 from .models import ERROR_CODE_DESCRIPTIONS
 
+logger = logging.getLogger(__name__)
+
 BASE_URL = "https://openapi-eu.solaxcloud.com"
 REALTIME_DATA_URL = f"{BASE_URL}/openapi/v2/device/realtime_data"
 SET_SELF_USE_MODE_URL = f"{BASE_URL}/openapi/v2/device/inverter_work_mode/batch_set_spontaneity_self_use"
+# push_power/positive_or_negative_mode is accepted but ignored by the X3-NEO-LV (tested 2026-10-05); this mode works
+SOC_TARGET_URL = f"{BASE_URL}/openapi/v2/device/inverter_vpp_mode/soc_target_control_mode"
+EXIT_VPP_URL = f"{BASE_URL}/openapi/v2/device/inverter_vpp_mode/exit_vpp_mode"
+REQUEST_RESULT_URL = f"{BASE_URL}/openapi/apiRequestLog/listByCondition"
 
 DEVICE_TYPE_INVERTER = 1
 DEVICE_TYPE_BATTERY = 2
 BUSINESS_TYPE_RESIDENTIAL = 1
 REQUEST_SN_TYPE_INVERTER = 1
+# result[SN].status: 3 = command issued, 4 = device received and started execution
+COMMAND_DELIVERED_STATUSES = (3, 4)
 
 _last_call_at = 0.0
 _rate_limit_lock = asyncio.Lock()
@@ -230,15 +239,6 @@ async def set_self_use_mode(
     Raises:
         SolaxApiError: if the API call fails.
     """
-    global _last_call_at
-
-    # Rate limiting
-    async with _rate_limit_lock:
-        elapsed = time.monotonic() - _last_call_at
-        if elapsed < MIN_INTERVAL_SECONDS:
-            await asyncio.sleep(MIN_INTERVAL_SECONDS - elapsed)
-        _last_call_at = time.monotonic()
-
     # Build request body
     body = {
         "snList": [device_sn],
@@ -270,6 +270,19 @@ async def set_self_use_mode(
     if discharge_end_time_period2:
         body["dischargeEndTimePeriod2"] = discharge_end_time_period2
 
+    return await _post_command(SET_SELF_USE_MODE_URL, body)
+
+
+async def _post_command(url: str, body: dict) -> dict:
+    """POST a control command: rate limit, auth (with one retry on 10402), check code 10000."""
+    global _last_call_at
+
+    async with _rate_limit_lock:
+        elapsed = time.monotonic() - _last_call_at
+        if elapsed < MIN_INTERVAL_SECONDS:
+            await asyncio.sleep(MIN_INTERVAL_SECONDS - elapsed)
+        _last_call_at = time.monotonic()
+
     # Get access token and make request
     try:
         token = await auth.get_access_token()
@@ -279,7 +292,7 @@ async def set_self_use_mode(
     async with httpx.AsyncClient(timeout=10.0) as client:
         try:
             response = await client.post(
-                SET_SELF_USE_MODE_URL,
+                url,
                 json=body,
                 headers={"Authorization": f"bearer {token}"},
             )
@@ -312,7 +325,7 @@ async def set_self_use_mode(
 
             try:
                 response = await client.post(
-                    SET_SELF_USE_MODE_URL,
+                    url,
                     json=body,
                     headers={"Authorization": f"bearer {token}"},
                 )
@@ -334,3 +347,40 @@ async def set_self_use_mode(
             raise SolaxApiError(f"API error {code}: {description}")
 
         return response_body
+
+
+def _check_delivered(response: dict, device_sn: str) -> dict:
+    """Raise unless the device command was issued (code 10000 only means the platform accepted the request)."""
+    logger.warning("SolaX command for %s: requestId=%s result=%s", device_sn, response.get("requestId"), response.get("result"))
+    result = response.get("result")
+    device_status = result.get(device_sn, {}).get("status") if isinstance(result, dict) else None
+    if device_status not in COMMAND_DELIVERED_STATUSES:
+        raise SolaxApiError(f"Command not delivered to {device_sn}: status {device_status}")
+    return response
+
+
+async def discharge_to_soc(device_sn: str, discharge_w: int, stop_soc: int) -> dict:
+    """Remote control: discharge at discharge_w (W, inverter AC port) until the battery reaches stop_soc (%).
+
+    The mode has no duration: it runs until stop_soc is reached or exit_vpp_mode is called.
+    The house load is served first and only the rest is exported. If stop_soc >= current SOC, the
+    inverter exits the mode right away.
+    """
+    body = {
+        "snList": [device_sn],
+        "targetSoc": stop_soc,
+        "chargeDischargPower": -discharge_w,  # API: negative = discharge (sic, "chargeDischargPower")
+        "businessType": BUSINESS_TYPE_RESIDENTIAL,
+    }
+    return _check_delivered(await _post_command(SOC_TARGET_URL, body), device_sn)
+
+
+async def exit_vpp_mode(device_sn: str) -> dict:
+    """Exit remote control: the inverter returns to its normal work mode (e.g. Self Use)."""
+    body = {"snList": [device_sn], "businessType": BUSINESS_TYPE_RESIDENTIAL}
+    return _check_delivered(await _post_command(EXIT_VPP_URL, body), device_sn)
+
+
+async def get_request_result(request_id: str) -> dict:
+    """Execution result of a control command, by the requestId it returned (status 4 = started, 5 = failed)."""
+    return await _post_command(REQUEST_RESULT_URL, {"requestId": request_id})

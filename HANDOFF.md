@@ -6,7 +6,7 @@ Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast o
 
 - Inverter: SolaX **X3-NEO-12K-LV**, 3-phase, 12 kW AC. Low-voltage (48 V) battery, inverter battery limit 280 A.
 - Battery: **21.2 kWh**, 4 modules in parallel, 120 A continuous each (210 A for 10 s). In practice the inverter is the limit, not the battery.
-- PV: **6.48 kWp**. Grid connection: 21 kW (expandable to 30 kW).
+- PV: **6.48 kWp**, 16 × JKM405M-72HL-TV, ground mount, tilt 30°, facing **south-west** (compass 215°; Solcast azimuth **145**, where north = 0, south = ±180 and west is positive). Grid connection: 21 kW (expandable to 30 kW).
 - Tariff: **G12w**. Off-peak 22–06 and 13–15 on weekdays, all day on weekends and Polish public holidays. Hourly net-billing.
 - Export valuation: **RCE** (15-min market price from PSE). The SolaX app uses a TGE price list as an approximation, because RCE cannot be configured there.
 - Owner verified manually: battery discharge at **5 kW** works. The discharge setpoint is **battery output**: the house load is served first and only the rest is exported. So 3 kW with a 2.5 kW appliance running gives almost no export.
@@ -48,18 +48,33 @@ Candidate SolaX Developer API endpoints. Paths come from the open-source HA inte
 - `POST /openapi/v2/device/inverter_vpp_mode/exit_vpp_mode`. Required: `snList`, `businessType`.
 - Also listed: `inverter_work_mode/batch_set_manual_mode`, `device_control/strategy/set_export_control`, `inverter_vpp_mode/power_control_mode`.
 
-**Unknown and must be read from the official docs** (developer.solaxcloud.com, logged in):
-- sign and unit of `batteryPower`;
-- unit of `timeOfDuration`;
-- allowed `nextMotion` values (what happens after the duration ends);
-- whether a grid-side target exists. A grid-side target would make export independent of house load, which is ideal given the owner's observation.
+**Confirmed from the official docs** (developer.solaxcloud.com → Documents → "Inverter Remote Control Mode", read 2026-10-05; X3-NEO-LV is device type 33):
+- `push_power/positive_or_negative_mode`: `batteryPower` in **W**, **positive = discharge**, negative = charge. Battery-side, so the house load is served first (matches the owner's observation). PV keeps running at max.
+- `timeOfDuration` is in **seconds** in every VPP mode.
+- `nextMotion`: **160 = exit remote control** (back to the normal work mode and its settings), **161 = back to "Self-Consume Charge/Discharge"**, which is still remote mode and charges from PV only, so it would block G12w grid charging. Use **160**.
+- `exit_vpp_mode`: body `{snList, businessType}`.
+- Success is `code == 10000`. `result[SN].status`: 1 offline, 2 issue failed, 3 issued, 4 device started, 5 execution failed, 6 timeout. Real execution results go only to the app's `callback_url`, which we cannot receive locally, so confirm execution from realtime battery power instead.
+- **No grid-side target exists.** The other modes target the inverter **AC port** (house load is still on the grid side of the inverter):
+  - `power_control_mode`: `activePowerTarget` (W), `wReactivePowerTarget` (Var), `timeOfDuration` (s). The sign is not documented.
+  - `soc_target_control_mode`: `chargeDischargPower` (W, **negative = discharge**), `targetSoc`. It stops by itself at the target SOC, but it has **no duration**, so it keeps running if the server dies.
+  - `electric_quantity_target_control_mode`: `chargeDischargPower` (W, negative = discharge), `targetEngergy` (Wh, sic).
+- Note the API typos `chargeDischargPower` and `targetEngergy`; send them as spelled.
+
+**Hardware test 2026-10-05 (SOC 91%, house ~0.85 kW, no PV):**
+- `push_power/positive_or_negative_mode` (1 kW and 2 kW): status 4 (device received), but the inverter **ignored it** and stayed in Self Use.
+- `soc_target_control_mode` (`chargeDischargPower=-2000`, `targetSoc=90`): **works**. Battery 1.99 kW, house 0.87 kW, export 1.12 kW. It matches the parameters of the SolaX Cloud automation action "Equipment Discharge (by Percentage)" (target %, power kW).
+- `exit_vpp_mode`: status 4.
+- Check a command with `POST /openapi/apiRequestLog/listByCondition {"requestId": ...}` (status 4 = started). The client logs every `requestId`.
+- Each new access token invalidates the previous one. Two processes with the same client ID (e.g. the server and a script) make each other hit 10402; the client retries once.
+
+Chosen design: `soc_target_control_mode` with `targetSoc = recommendedExportFloorSoc` and the setpoint at the AC port. It has **no duration**, so the server must send `exit_vpp_mode` at the end of each export slot. If the server dies, the inverter keeps discharging but stops at the floor SOC.
 
 Also find out which endpoint the owner's manual 5 kW discharge used in the app, if it maps to the API.
 
 Requirements:
-1. Add a manual test endpoint, e.g. `POST /api/battery/export-test {power_kw<=2, minutes<=5}`. It must check `X-Confirm: yes`, enforce the hard caps, and always restore Self Use / exit VPP afterwards. Test it with the owner watching the app.
-2. Execution in `_export_loop`: when `currentSlot.export`, send the command for one slot (15 min) with the setpoint capped at `EXPORT_MAX_POWER_KW`. Otherwise make sure the inverter is back in normal Self Use (exit VPP). It must be idempotent across restarts.
-3. Improve the setpoint with live house load, if the command is battery-side: at slot start, setpoint = planned export + current house load (from realtime data), capped.
+1. **Done:** `POST /api/battery/export-test {power_kw<=2, minutes<=5, stop_soc>=30}` with `X-Confirm: yes`, and `POST /api/battery/export-stop` (see HTTP_API.md). The mode was verified on hardware with a script; run the endpoint itself once more with the owner watching.
+2. Execution in `_export_loop`: when `currentSlot.export`, send `soc_target_control_mode` with the setpoint capped at `EXPORT_MAX_POWER_KW` and `targetSoc = recommendedExportFloorSoc`. Otherwise make sure the inverter is back in normal Self Use (exit VPP). It must be idempotent across restarts.
+3. Improve the setpoint with live house load (the AC-port target includes the house): at slot start, setpoint = planned export + current house load (from realtime data), capped.
 4. Safety:
    - abort if SOC < `recommendedExportFloorSoc`;
    - on any error, call exit VPP / restore Self Use;

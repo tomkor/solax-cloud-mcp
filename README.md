@@ -211,7 +211,7 @@ The API key is sent in the `Authorization` header only, never in the URL.
 
 ### Battery Automation (forecast-driven grid charging)
 
-Built into the HTTP server and disabled by default. Designed for time-of-use tariffs such as Polish **G12w**: cheap at 22:00-06:00 and 13:00-15:00 on weekdays, all day on weekends and public holidays.
+Built into the HTTP server and disabled by default. Designed for time-of-use tariffs such as Polish **G12w**: cheap at 22:00-06:00 and 13:00-15:00 on weekdays in winter (1 Oct - 31 Mar), 22:00-06:00 and 15:00-17:00 in summer (1 Apr - 30 Sep), and all day on weekends and public holidays. Set `TARIFF_OFFPEAK_WINDOWS` (winter or all year) and `TARIFF_OFFPEAK_WINDOWS_SUMMER` for other tariffs.
 
 **How it works:** a few minutes before each daily off-peak window (`AUTOMATION_LEAD_MINUTES`), the planner:
 1. Takes the peak-price hours right after the window, e.g. 06:00-13:00 after the night window and 15:00-22:00 after the midday one. When the window is followed by more off-peak time (Friday night, holidays), there is nothing to cover and grid charging is disabled.

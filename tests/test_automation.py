@@ -21,7 +21,7 @@ from solax_cloud_mcp.automation import (  # noqa: E402
 )
 
 TZ = ZoneInfo("Europe/Warsaw")
-G12W = Tariff(windows=((22, 6), (13, 15)), weekends=True, holidays=True)
+G12W = Tariff(windows=((22, 6), (13, 15)), weekends=True, holidays=True, summer_windows=((22, 6), (15, 17)))
 
 
 def _settings(**overrides) -> Settings:
@@ -69,6 +69,11 @@ def test_polish_holidays_2026():
         (_local(2026, 10, 6, 15), False),
         (_local(2026, 10, 10, 18), True),  # Saturday
         (_local(2026, 11, 11, 18), True),  # Independence Day (Wednesday)
+        (_local(2027, 4, 1, 13), False),  # summer: 13-15 is peak
+        (_local(2027, 4, 1, 15), True),  # summer midday window 15-17
+        (_local(2027, 4, 1, 23), True),
+        (_local(2027, 9, 30, 16), True),
+        (_local(2027, 10, 1, 16), False),  # winter again
     ],
 )
 def test_g12w_zones(when, offpeak):
@@ -193,6 +198,11 @@ def test_settings_from_env(monkeypatch):
     assert s.dry_run is True  # safe default
     assert s.consumption_profile == (0.5,) * 24
     assert s.tariff.windows == ((22, 6), (13, 15))
+    assert s.tariff.summer_windows == ((22, 6), (15, 17))
+    # Custom windows stay year-round unless summer windows are set too
+    monkeypatch.setenv("TARIFF_OFFPEAK_WINDOWS", "23:00-07:00")
+    assert Settings.from_env().tariff.windows_for(date(2027, 7, 1)) == ((23, 7),)
+    monkeypatch.delenv("TARIFF_OFFPEAK_WINDOWS")
     assert s.weekend_profile is None
     monkeypatch.setenv("AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH", "19.2")
     assert Settings.from_env().weekend_profile == pytest.approx((0.8,) * 24)
@@ -345,3 +355,9 @@ def test_live_house_load_from_realtime():
     assert automation.live_house_load_kw(rt) == 4.5
     rt["meter1"]["gridPower_W"] = None
     assert automation.live_house_load_kw(rt) is None
+
+
+def test_next_trigger_uses_summer_windows():
+    s = _settings()
+    t = next_trigger(s, _local(2027, 4, 1, 10))  # Thursday in summer
+    assert (t.window, t.window_start.hour) == ((15, 17), 15)

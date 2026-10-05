@@ -72,11 +72,19 @@ def _parse_windows(raw: str) -> tuple[tuple[int, int], ...]:
     return tuple(windows)
 
 
+G12W_WINTER_WINDOWS = "22:00-06:00,13:00-15:00"  # 1 Oct - 31 Mar
+G12W_SUMMER_WINDOWS = "22:00-06:00,15:00-17:00"  # 1 Apr - 30 Sep
+
+
 @dataclass(frozen=True)
 class Tariff:
-    windows: tuple[tuple[int, int], ...]
+    windows: tuple[tuple[int, int], ...]  # winter (1 Oct - 31 Mar), or all year without summer_windows
     weekends: bool
     holidays: bool
+    summer_windows: tuple[tuple[int, int], ...] | None = None  # 1 Apr - 30 Sep
+
+    def windows_for(self, d: date) -> tuple[tuple[int, int], ...]:
+        return self.summer_windows if self.summer_windows and 4 <= d.month <= 9 else self.windows
 
     def is_offpeak(self, local: datetime) -> bool:
         d = local.date()
@@ -85,7 +93,8 @@ class Tariff:
         if self.holidays and d in polish_holidays(d.year):
             return True
         h = local.hour
-        return any((s <= h < e) if s < e else (h >= s or h < e) for s, e in self.windows)
+        # A window crossing midnight belongs to the day it starts on (same night hours in both seasons)
+        return any((s <= h < e) if s < e else (h >= s or h < e) for s, e in self.windows_for(d))
 
 
 def _parse_profile(raw: str, name: str) -> tuple[float, ...]:
@@ -163,7 +172,11 @@ class Settings:
         return cls(
             tz=ZoneInfo(config.get_solar_timezone()),
             tariff=Tariff(
-                windows=_parse_windows(env("TARIFF_OFFPEAK_WINDOWS", "22:00-06:00,13:00-15:00")),
+                windows=_parse_windows(env("TARIFF_OFFPEAK_WINDOWS", G12W_WINTER_WINDOWS)),
+                # Custom year-round windows stay year-round unless summer windows are set explicitly
+                summer_windows=_parse_windows(
+                    env("TARIFF_OFFPEAK_WINDOWS_SUMMER", env("TARIFF_OFFPEAK_WINDOWS") or G12W_SUMMER_WINDOWS)
+                ),
                 weekends=env("TARIFF_OFFPEAK_WEEKENDS", "1") == "1",
                 holidays=env("TARIFF_OFFPEAK_HOLIDAYS", "1") == "1",
             ),
@@ -194,7 +207,7 @@ def next_trigger(settings: Settings, after: datetime) -> Trigger:
     candidates = []
     for offset in range(0, 3):
         d = local_day + timedelta(days=offset)
-        for window in settings.tariff.windows:
+        for window in settings.tariff.windows_for(d):
             start = datetime(d.year, d.month, d.day, window[0], tzinfo=settings.tz)
             run_at = start - timedelta(minutes=settings.lead_minutes)
             if run_at > after:

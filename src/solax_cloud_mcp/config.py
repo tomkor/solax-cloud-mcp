@@ -55,3 +55,42 @@ def is_write_enabled() -> bool:
     (e.g. via prompt injection) cannot reconfigure the inverter unless opted in.
     """
     return os.getenv("SOLAX_ALLOW_WRITE", "").strip().lower() in ("1", "true", "yes")
+
+
+def is_solcast_configured() -> bool:
+    """Whether Solcast forecast integration is enabled (API key and at least one site set)."""
+    return bool(os.getenv("SOLCAST_API_KEY")) and bool(get_solcast_resource_ids())
+
+
+def get_solcast_api_key() -> str:
+    """Get the Solcast API key from environment.
+
+    Raises:
+        RuntimeError: if SOLCAST_API_KEY is not set.
+    """
+    key = os.getenv("SOLCAST_API_KEY")
+    if not key:
+        raise RuntimeError(
+            "SOLCAST_API_KEY environment variable not set. "
+            "Create a (free hobbyist) account at https://toolkit.solcast.com.au/ and copy the API key."
+        )
+    return key
+
+
+def get_solcast_resource_ids() -> list[str]:
+    """Get Solcast rooftop site resource IDs (comma-separated, e.g. east and west arrays)."""
+    raw = os.getenv("SOLCAST_RESOURCE_IDS", "")
+    return [r.strip() for r in raw.split(",") if r.strip()]
+
+
+def get_solcast_cache_minutes() -> int:
+    """How long a Solcast response is reused before refetching (default 180 min).
+
+    Hobbyist accounts allow ~10 API calls/day; each refresh costs one call per site.
+    """
+    return int(os.getenv("SOLCAST_CACHE_MINUTES") or "180")
+
+
+def get_solar_timezone() -> str:
+    """IANA timezone used for forecast day boundaries and timestamps (default UTC)."""
+    return os.getenv("SOLAR_TIMEZONE") or "UTC"

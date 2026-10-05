@@ -415,6 +415,45 @@ schedule.scheduleJob('0 23 * * *', async () => {
 
 ---
 
+### 4. Get Solar Forecast (Solcast)
+
+Get the PV production forecast for the installation. Requires `SOLCAST_API_KEY` and `SOLCAST_RESOURCE_IDS` (see README); otherwise returns `503`.
+
+**Request:**
+```http
+GET /api/solar-forecast?hours=24 HTTP/1.1
+Authorization: Bearer YOUR_API_KEY
+```
+
+**Query parameters:**
+- `hours` (integer, 1-168, optional): Length of the hourly profile. Default: `24`
+
+**Response (200 OK):**
+```json
+{
+  "source": "solcast",
+  "fetchedAt": "2026-07-01T09:12:03+02:00",
+  "stale": false,
+  "timezone": "Europe/Warsaw",
+  "days": [
+    {
+      "date": "2026-07-01",
+      "energy_kWh": {"p10": 18.2, "p50": 31.4, "p90": 36.0},
+      "peakPower_kW": 6.8,
+      "peakTime": "2026-07-01T13:00+02:00"
+    }
+  ],
+  "remainingToday_kWh": {"p10": 15.1, "p50": 27.9, "p90": 32.2},
+  "hourly": [
+    {"time": "2026-07-01T10:00+02:00", "power_kW": {"p10": 2.1, "p50": 4.3, "p90": 5.0}}
+  ]
+}
+```
+
+- `p50` is the most likely value, `p10` a pessimistic and `p90` an optimistic scenario.
+- Data is cached (`SOLCAST_CACHE_MINUTES`, default 180) because Solcast hobbyist accounts allow ~10 calls/day. `stale: true` means the latest refresh failed and cached data is returned.
+- Solcast failures return `502` with a generic message; details are logged on the server.
+
 ## Common Patterns
 
 ### Polling for Real-Time Updates

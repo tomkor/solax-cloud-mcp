@@ -187,6 +187,28 @@ The `set_battery_self_use_mode` tool changes inverter settings and is **not expo
 }
 ```
 
+### Tool: `get_solar_forecast` (optional, Solcast)
+
+Available when `SOLCAST_API_KEY` and `SOLCAST_RESOURCE_IDS` are set. Read-only PV production forecast from [Solcast](https://solcast.com/) rooftop sites, summed across all configured sites (e.g. east + west arrays).
+
+**Setup:**
+1. Create a free hobbyist account at https://toolkit.solcast.com.au/ and add your rooftop site(s) (location, azimuth, tilt, kWp).
+2. Copy the API key and each site's Resource ID into `.env`:
+   ```bash
+   SOLCAST_API_KEY=your_api_key
+   SOLCAST_RESOURCE_IDS=abcd-1234-ef56-7890,1234-abcd-7890-ef56
+   SOLAR_TIMEZONE=Europe/Warsaw
+   # SOLCAST_CACHE_MINUTES=180
+   ```
+
+**Arguments:** `hours` (1-168, default 24) — length of the hourly profile.
+
+**Returns:** per-day forecast energy (`p10`/`p50`/`p90` kWh, peak power and time), `remainingToday_kWh`, an hourly power profile (kW) in `SOLAR_TIMEZONE`, plus `fetchedAt` and `stale`.
+
+**API limits:** hobbyist accounts allow ~10 calls/day, and every refresh costs one call per site. Responses are cached for `SOLCAST_CACHE_MINUTES` (default 180) and fetched only on demand; if a refresh fails (e.g. `429`), the last cached data is returned with `stale: true`. With two sites, consider `SOLCAST_CACHE_MINUTES=360`.
+
+The API key is sent in the `Authorization` header only, never in the URL.
+
 ### Example Usage in Claude
 
 > "What's the current power output of my solar inverter?"
@@ -267,6 +289,15 @@ curl -X POST \
 ```
 
 Returns current power output, battery SOC, grid export/import, and more.
+
+#### Get Solar Forecast (Solcast)
+
+```bash
+curl -H "Authorization: Bearer YOUR_API_KEY" \
+  "http://localhost:8000/api/solar-forecast?hours=24"
+```
+
+Returns `503` when Solcast is not configured.
 
 #### Set Battery Self-Use Mode
 

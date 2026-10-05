@@ -19,7 +19,7 @@ Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast o
 | #1 | `security-hardening` | Constant-time API key check; auth runs before body validation; `/docs` disabled; generic 502 on upstream errors; default bind `127.0.0.1`; required self-use fields with HH:MM validation; MCP write tool behind `SOLAX_ALLOW_WRITE`; Docker non-root, `uv sync --frozen` |
 | #2 | `solcast-forecast` | Solcast forecast (multi-site, cache for the ~10 calls/day limit), `get_solar_forecast` MCP tool, `GET /api/solar-forecast` |
 | #3 | `battery-automation` | G12w grid-charge planner inside the HTTP server: before each off-peak window it sets the target SOC from consumption − PV forecast; **dry run by default** |
-| #4 | `export-planner` | RCE prices from PSE (`get_energy_prices`, `GET /api/prices`); export planner (surplus above house need, best slots ≥ threshold, accounts for house load); `recommendedExportFloorSoc`; **dry run only, write path not implemented** |
+| #4 | `export-planner` | RCE prices from PSE (`get_energy_prices`, `GET /api/prices`); export planner (surplus above house need, best slots ≥ threshold, accounts for house load); `recommendedExportFloorSoc`; export execution via `soc_target_control_mode` (dry run by default) |
 
 Work on `export-planner`: it contains all four. Tests: `uv sync && uv run pytest -q` (102 pass).
 
@@ -40,7 +40,7 @@ The charge planner (#3) assumes `chargeUpperSoc` ("Charge battery to") limits **
 
 ## Task 3 (main): implement export execution
 
-The planner already computes, every 15 min, the current slot's `dischargeSetpoint_kW` / `expectedExport_kW` (`automation.py`: `compute_export_plan`, `AutomationScheduler._export_loop`). `ExportSettings.from_env` currently **rejects `EXPORT_DRY_RUN=0`**.
+The planner already computes, every 15 min, the current slot's `dischargeSetpoint_kW` / `expectedExport_kW` (`automation.py`: `compute_export_plan`, `AutomationScheduler._export_loop`). With `EXPORT_DRY_RUN=0` it now sends the commands (see Requirements).
 
 Candidate SolaX Developer API endpoints. Paths come from the open-source HA integration NoUsername10/Solax-Developer-API-for-Home-assistant (`const.py`), which itself only dry-runs them:
 
@@ -73,11 +73,11 @@ Also find out which endpoint the owner's manual 5 kW discharge used in the app, 
 
 Requirements:
 1. **Done:** `POST /api/battery/export-test {power_kw<=2, minutes<=5, stop_soc>=30}` with `X-Confirm: yes`, and `POST /api/battery/export-stop` (see HTTP_API.md). The mode was verified on hardware with a script; run the endpoint itself once more with the owner watching.
-2. Execution in `_export_loop`: when `currentSlot.export`, send `soc_target_control_mode` with the setpoint capped at `EXPORT_MAX_POWER_KW` and `targetSoc = recommendedExportFloorSoc`. Otherwise make sure the inverter is back in normal Self Use (exit VPP). It must be idempotent across restarts.
-3. Improve the setpoint with live house load (the AC-port target includes the house): at slot start, setpoint = planned export + current house load (from realtime data), capped.
-4. Safety:
-   - abort if SOC < `recommendedExportFloorSoc`;
-   - on any error, call exit VPP / restore Self Use;
+2. **Done (code), not yet run live:** execution in `_export_loop` (`AutomationScheduler.apply_export`): when `currentSlot.export`, send `soc_target_control_mode` with the setpoint capped at `EXPORT_MAX_POWER_KW` and `targetSoc = recommendedExportFloorSoc`. Otherwise make sure the inverter is back in normal Self Use (exit VPP). It must be idempotent across restarts.
+3. **Open:** improve the setpoint with live house load (the AC-port target includes the house): at slot start, setpoint = planned export + current house load (from realtime data), capped.
+4. Safety (**done**, tested with fakes in `tests/test_automation.py`):
+   - abort if SOC <= `recommendedExportFloorSoc` (the inverter also stops there by itself);
+   - on any error (command or planner), call exit VPP; also on server shutdown;
    - keep a kill switch (`EXPORT_DRY_RUN=1`);
    - log every command;
    - never let the charge planner and the export loop write at the same time (shared asyncio lock).

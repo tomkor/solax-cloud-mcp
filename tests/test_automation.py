@@ -261,11 +261,66 @@ def test_no_export_when_battery_needed_for_house():
     assert plan["slots"] == []
 
 
-def test_export_dry_run_off_is_rejected(monkeypatch):
+def test_export_dry_run_defaults_on(monkeypatch):
     monkeypatch.setenv("EXPORT_MAX_POWER_KW", "8")
+    monkeypatch.delenv("EXPORT_DRY_RUN", raising=False)
+    assert ExportSettings.from_env().dry_run is True
     monkeypatch.setenv("EXPORT_DRY_RUN", "0")
-    with pytest.raises(RuntimeError, match="not supported"):
-        ExportSettings.from_env()
+    assert ExportSettings.from_env().dry_run is False
+
+
+@pytest.fixture
+def remote(monkeypatch):
+    """Capture remote-control commands instead of hitting the SolaX API."""
+    calls = {"commands": [], "fail": None}
+
+    async def fake_discharge(device_sn, discharge_w, stop_soc):
+        calls["commands"].append(("discharge", discharge_w, stop_soc))
+        if calls["fail"]:
+            raise automation.SolaxApiError("boom")
+
+    async def fake_exit(device_sn):
+        calls["commands"].append(("exit",))
+
+    monkeypatch.setenv("SOLAX_DEVICE_SN", "SN1")
+    monkeypatch.setattr(automation, "discharge_to_soc", fake_discharge)
+    monkeypatch.setattr(automation, "exit_vpp_mode", fake_exit)
+    return calls
+
+
+def _live_scheduler(max_power_kw=5.0):
+    export = ExportSettings(min_price_pln_kwh=1.0, max_power_kw=max_power_kw, min_slot_kwh=0.2, price_multiplier=1.0, dry_run=False)
+    return AutomationScheduler(_settings(), export)
+
+
+def _plan(export, soc=60, floor=40, setpoint=5.0):
+    slot = {"export": True, "dischargeSetpoint_kW": setpoint} if export else {"export": False}
+    return {"currentSlot": slot, "socPercent": soc, "recommendedExportFloorSoc": floor}
+
+
+async def test_export_slot_discharges_to_floor_then_exits_once(remote):
+    scheduler = _live_scheduler(max_power_kw=4.0)
+    assert await scheduler.apply_export(_plan(True, setpoint=4.6)) == {"action": "discharge", "setpoint_W": 4000, "stopSoc": 40}
+    assert (await scheduler.apply_export(_plan(False)))["action"] == "exit"
+    assert (await scheduler.apply_export(_plan(False)))["action"] == "none"
+    assert remote["commands"] == [("discharge", 4000, 40), ("exit",)]
+
+
+async def test_unknown_state_after_restart_exits(remote):
+    assert (await _live_scheduler().apply_export(_plan(False)))["action"] == "exit"
+
+
+async def test_soc_at_floor_never_discharges(remote):
+    await _live_scheduler().apply_export(_plan(True, soc=40, floor=40))
+    assert remote["commands"] == [("exit",)]
+
+
+async def test_failed_discharge_exits_remote_control(remote):
+    remote["fail"] = True
+    scheduler = _live_scheduler()
+    with pytest.raises(automation.SolaxApiError):
+        await scheduler.apply_export(_plan(True))
+    assert remote["commands"] == [("discharge", 5000, 40), ("exit",)]
 
 
 def test_house_load_above_setpoint_means_no_export_in_that_slot():

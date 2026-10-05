@@ -239,13 +239,13 @@ See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
 
 **Export planner** (`EXPORT_ENABLED=1`, requires battery automation): every 15 minutes it reads the current SOC, the PV forecast and RCE prices, then:
 1. Computes the battery **surplus**: energy above `AUTOMATION_MIN_SOC` minus what the house needs until the next off-peak window (consumption − PV, same model as the charge planner). Selling therefore never forces buying back at peak price.
-2. Allocates the surplus to the most expensive slots at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0). `EXPORT_MAX_POWER_KW` is the **battery discharge setpoint**: the house load is served first and only the rest goes to the grid. Per slot, `export = setpoint × 0.25 h − expected house load`. The plan shows `export_kWh`, `expectedHouseLoad_kWh` and the `dischargeSetpoint_kW` needed, which equals export plus load.
+2. Allocates the surplus to the most expensive slots at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0). `EXPORT_MAX_POWER_KW` is the **inverter AC output setpoint**: the house load is served first and only the rest goes to the grid. Per slot, `export = setpoint × 0.25 h − expected house load`. The plan shows `export_kWh`, `expectedHouseLoad_kWh` and the `dischargeSetpoint_kW` needed, which equals export plus load.
 
 The plan also reports `recommendedExportFloorSoc`: the SOC floor that keeps enough energy for the house until the next off-peak window. Use it to tune a price-based export rule configured in SolaX Cloud (e.g. "discharge to X%, max 5 kW, if export price > 1 PLN"), which uses a fixed floor.
 
 `POST /api/export/preview` shows the plan. `GET /api/automation` shows the last plan under `export`.
 
-> **Dry run only.** Sending battery export commands (SolaX VPP "push power") is not implemented until the command's parameters (sign and units of `batteryPower`, `timeOfDuration`, `nextMotion`) are verified against the official SolaX documentation. `EXPORT_DRY_RUN=0` is rejected at startup.
+> **Dry run by default.** With `EXPORT_DRY_RUN=0` the server sends, at the start of each export slot, SolaX remote control `soc_target_control_mode` (discharge at the slot setpoint until `recommendedExportFloorSoc`). In any other slot it exits remote control, so the inverter goes back to its normal work mode. The mode has no duration: if the server stops mid-slot, the inverter keeps discharging but stops at the floor SOC. Charge-planner and export writes never run at the same time. Disable any SolaX Cloud price rule that also discharges, so the two do not fight. (`push_power` mode is accepted but ignored by the X3-NEO-LV.)
 
 ### Example Usage in Claude
 

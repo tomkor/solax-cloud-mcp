@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from . import config
+from .client import SolaxApiError, discharge_to_soc, exit_vpp_mode
 from .forecast import get_solar_forecast
 from .prices import PriceSlot, get_rce_prices
 from .server import get_realtime_data_impl, set_battery_self_use_mode_impl
@@ -270,16 +271,12 @@ class ExportSettings:
         max_power = env("EXPORT_MAX_POWER_KW")
         if not max_power:
             raise RuntimeError("EXPORT_MAX_POWER_KW is required when EXPORT_ENABLED=1")
-        if env("EXPORT_DRY_RUN", "1") == "0":
-            # The SolaX push-power command semantics (sign/units of batteryPower, nextMotion) are not
-            # verified yet, so the planner may only log decisions.
-            raise RuntimeError("EXPORT_DRY_RUN=0 is not supported yet: battery export commands are not implemented")
         return cls(
             min_price_pln_kwh=float(env("EXPORT_MIN_PRICE_PLN_KWH", "1.0")),
             max_power_kw=float(max_power),
             min_slot_kwh=float(env("EXPORT_MIN_SLOT_KWH", "0.2")),
             price_multiplier=float(env("EXPORT_PRICE_MULTIPLIER", "1.0")),
-            dry_run=True,
+            dry_run=env("EXPORT_DRY_RUN", "1") != "0",
         )
 
 
@@ -313,8 +310,8 @@ def compute_export_plan(
     never forces buying back at peak price). Surplus is allocated greedily to the highest-price slots at
     or above the threshold.
 
-    The discharge setpoint is battery output: the house load is served first and only the rest is
-    exported. So per slot export = setpoint * 0.25 h - house load in that slot (already covered by the
+    The discharge setpoint is the inverter AC output (SolaX soc_target_control_mode): the house load
+    is served first and only the rest is exported. So per slot export = setpoint * 0.25 h - house load in that slot (already covered by the
     reserve), and the setpoint for a partially used slot is export + expected house load.
     """
     horizon = _horizon_end(settings, now)
@@ -400,6 +397,10 @@ class AutomationScheduler:
         self.next_run: Trigger | None = None
         self._task: asyncio.Task | None = None
         self._export_task: asyncio.Task | None = None
+        # Charge planner and export loop must never write to the inverter at the same time
+        self._write_lock = asyncio.Lock()
+        # Whether the inverter is in remote control (export); None = unknown, e.g. after a restart
+        self._remote_control: bool | None = None
 
     async def run(self, trigger: Trigger, apply: bool) -> dict:
         """Compute a plan for `trigger` and optionally write it to the inverter."""
@@ -412,13 +413,14 @@ class AutomationScheduler:
 
         if apply:
             s, e = trigger.window
-            await set_battery_self_use_mode_impl(
-                min_soc=plan["minSoc"],
-                charge_upper_soc=plan["targetSoc"],
-                charge_from_grid_enable=int(plan["gridCharge"]),
-                charge_start_time_period1=f"{s:02d}:00",
-                charge_end_time_period1=f"{e:02d}:00",
-            )
+            async with self._write_lock:
+                await set_battery_self_use_mode_impl(
+                    min_soc=plan["minSoc"],
+                    charge_upper_soc=plan["targetSoc"],
+                    charge_from_grid_enable=int(plan["gridCharge"]),
+                    charge_start_time_period1=f"{s:02d}:00",
+                    charge_end_time_period1=f"{e:02d}:00",
+                )
             plan["applied"] = True
         return plan
 
@@ -438,6 +440,45 @@ class AutomationScheduler:
             self.settings, self.export, now, float(soc), _pv_by_hour(forecast, self.settings.percentile), prices
         )
 
+    async def apply_export(self, plan: dict) -> dict:
+        """Send the current slot's export command, or leave remote control when not exporting.
+
+        Uses soc_target_control_mode with the export floor as target: it has no duration, so the next
+        slot must always re-send or exit. If the server dies, the inverter still stops at the floor SOC.
+        """
+        device_sn = config.get_default_device_sn()
+        slot = plan["currentSlot"]
+        floor = plan["recommendedExportFloorSoc"]
+        export_now = slot["export"] and plan["socPercent"] > floor
+        async with self._write_lock:
+            if export_now:
+                watts = round(min(slot["dischargeSetpoint_kW"], self.export.max_power_kw) * 1000)
+                logger.warning("Export: discharge %d W until %d%% SOC on %s", watts, floor, device_sn)
+                self._remote_control = None
+                try:
+                    await discharge_to_soc(device_sn, watts, floor)
+                except SolaxApiError:
+                    await self._exit_remote_control(device_sn)
+                    raise
+                self._remote_control = True
+                return {"action": "discharge", "setpoint_W": watts, "stopSoc": floor}
+            if self._remote_control is not False:
+                if not await self._exit_remote_control(device_sn):
+                    raise SolaxApiError("Exit remote control failed")
+                return {"action": "exit"}
+            return {"action": "none"}
+
+    async def _exit_remote_control(self, device_sn: str) -> bool:
+        """Back to the normal work mode. Never raises; on failure the next slot retries."""
+        try:
+            await exit_vpp_mode(device_sn)
+        except SolaxApiError:
+            logger.exception("Export: exit remote control failed on %s", device_sn)
+            return False
+        logger.warning("Export: exit remote control on %s", device_sn)
+        self._remote_control = False
+        return True
+
     async def _export_loop(self) -> None:
         while True:
             # Run just after each 15-minute slot boundary
@@ -446,12 +487,19 @@ class AutomationScheduler:
             await asyncio.sleep((next_slot - now).total_seconds() + 5)
             try:
                 plan = await self.export_plan()
-                if plan["currentSlot"]["export"]:
-                    logger.info("Export plan (dry run): would export %s", plan["currentSlot"])
+                if self.export.dry_run:
+                    if plan["currentSlot"]["export"]:
+                        logger.info("Export plan (dry run): would export %s", plan["currentSlot"])
+                else:
+                    plan["execution"] = await self.apply_export(plan)
                 result = plan
             except Exception as e:
                 logger.exception("Export planner run failed")
                 result = {"error": f"{type(e).__name__} (details in server logs)"}
+                # Without a fresh plan, do not keep discharging
+                if not self.export.dry_run and self._remote_control is not False:
+                    async with self._write_lock:
+                        await self._exit_remote_control(config.get_default_device_sn())
             self.last_export = result
 
     async def preview(self) -> dict:
@@ -492,6 +540,9 @@ class AutomationScheduler:
                     await task
                 except asyncio.CancelledError:
                     pass
+        if self.export and not self.export.dry_run and self._remote_control is not False:
+            async with self._write_lock:
+                await self._exit_remote_control(config.get_default_device_sn())
 
     def status(self) -> dict:
         return {

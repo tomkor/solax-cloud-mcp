@@ -379,3 +379,19 @@ async def test_export_plan_without_solcast_assumes_no_pv(monkeypatch):
     plan = await AutomationScheduler(_settings(), EXPORT).export_plan(_local(2026, 10, 6, 18, 0))
     assert plan["pvForecastAvailable"] is False
     assert plan["reserveForHouse_kWh"] == 5.44  # 18-22: 4 h * 1 kWh / 0.9 + 1, no PV
+
+
+def test_decision_history_persists_and_skips_idle_export(tmp_path, monkeypatch):
+    path = tmp_path / "decisions.jsonl"
+    monkeypatch.setenv("DECISIONS_FILE", str(path))
+    scheduler = _live_scheduler()
+    scheduler._record_export({**_plan(False), "dryRun": False, "execution": {"action": "none"}})
+    scheduler._record_export({**_plan(True), "dryRun": False, "execution": {"action": "discharge", "setpoint_W": 5000, "stopSoc": 40}})
+    scheduler._record_export({"error": "SolaxApiError (details in server logs)"})
+    scheduler._record("charge", {"targetSoc": 45})
+    assert [e["kind"] for e in scheduler.history] == ["export", "export", "charge"]
+    assert scheduler.history[0]["setpoint_W"] == 5000
+
+    path.write_text(path.read_text() + "not json\n")
+    restored = _live_scheduler().history
+    assert [e["kind"] for e in restored] == ["export", "export", "charge"]

@@ -233,6 +233,11 @@ def create_app() -> FastAPI:
             "nextExportTick": next_tick.isoformat(timespec="minutes") if scheduler.export else None,
         }
 
+    @app.get("/api/automation/history", dependencies=[Depends(verify_api_key)])
+    async def automation_history() -> list[dict]:
+        """Charge and export decisions, newest first. Requires bearer token."""
+        return list(reversed(scheduler.history)) if scheduler else []
+
     @app.post("/api/automation/preview", dependencies=[Depends(verify_api_key)])
     async def preview_automation() -> dict:
         """Compute the plan for the next off-peak window without writing to the inverter."""

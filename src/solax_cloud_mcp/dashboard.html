@@ -27,7 +27,7 @@ h2 { font-size:18px; margin:0 0 10px; }
 table { width:100%; border-collapse:collapse; font-size:13px; }
 th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
 th { color:var(--muted); font-weight:500; }
-.scroll { overflow-x:auto; }
+.scroll { overflow:auto; }
 .chart { position:relative; height:240px; }
 button { font:inherit; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
 </style>
@@ -44,6 +44,7 @@ button { font:inherit; padding:5px 12px; border-radius:6px; border:1px solid var
   <section class="wide"><h2>Ceny RCE (PLN/kWh netto)</h2><div class="chart"><canvas id="price-chart"></canvas></div><div id="price-info" class="muted"></div></section>
   <section><h2>Harmonogram</h2><div id="schedule" class="muted">Ładowanie…</div></section>
   <section><h2>Bateria — teraz</h2><div id="battery" class="muted">Dane na żywo pobierane tylko na żądanie (limit SolaX).</div><p><button id="live">Pobierz dane z falownika</button></p></section>
+  <section class="wide"><h2>Historia decyzji</h2><div id="history" class="muted">Ładowanie…</div></section>
   <section><h2>Ustawienia</h2><div id="settings" class="muted">Ładowanie…</div></section>
   <section><h2>Profil zużycia (kWh/h)</h2><div class="chart"><canvas id="profile-chart"></canvas></div></section>
 </main>
@@ -194,6 +195,17 @@ async function loadLive() {
   });
 }
 
+async function loadHistory() {
+  const h = await api("/api/automation/history");
+  if (!h.length) { $("history").textContent = "Brak decyzji. Ustaw DECISIONS_FILE, żeby historia przetrwała restart."; return; }
+  const what = e => e.error ? `<span class="err">${esc(e.error)}</span>`
+    : e.kind === "charge" ? `Ładowanie z sieci do <b>${esc(e.targetSoc)}%</b> (${e.gridCharge ? "tak" : "nie"}), okno ${esc(e.window)}, potrzeba ${esc(e.needFromBattery_kWh)} kWh`
+    : `${esc(e.action)}${e.setpoint_W != null ? " " + (e.setpoint_W / 1000).toFixed(1) + " kW" : ""} do ${esc(e.stopSoc)}% SOC, SOC teraz ${esc(e.socPercent)}%, cena ${esc(e.price_PLN_kWh)}`;
+  const mode = e => e.dryRun ? badge(true) : e.kind === "charge" ? (e.applied ? '<span class="badge ok">WYSŁANO</span>' : "") : badge(false);
+  $("history").innerHTML = `<div class="scroll" style="max-height:360px"><table><tr><th>Kiedy</th><th>Co</th><th>Decyzja</th><th>Tryb</th></tr>` +
+    h.map(e => `<tr><td>${fmtT(e.time)}</td><td>${e.kind === "charge" ? "Ładowanie" : "Eksport"}</td><td>${what(e)}</td><td>${mode(e)}</td></tr>`).join("") + `</table></div>`;
+}
+
 async function loadAll() {
   if (!key()) { document.querySelector("main").innerHTML = "<section>Brak klucza. Odśwież stronę.</section>"; return; }
   let minPrice = null;
@@ -201,6 +213,7 @@ async function loadAll() {
     section("charge", loadAutomation),
     section("schedule", async () => { minPrice = await loadSettings(); }),
     section("pv-info", loadForecast),
+    section("history", loadHistory),
   ]);
   await section("price-info", () => loadPrices(minPrice));
   $("updated").textContent = "Aktualizacja " + new Date().toLocaleTimeString("pl-PL");

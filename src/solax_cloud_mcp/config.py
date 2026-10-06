@@ -96,6 +96,11 @@ def get_solcast_cache_file() -> str | None:
     return os.getenv("SOLCAST_CACHE_FILE") or None
 
 
+def get_decisions_file() -> str | None:
+    """Optional JSONL file that keeps the automation decision history across restarts."""
+    return os.getenv("DECISIONS_FILE") or None
+
+
 def get_solar_timezone() -> str:
     """IANA timezone used for forecast day boundaries and timestamps (default UTC)."""
     return os.getenv("SOLAR_TIMEZONE") or "UTC"

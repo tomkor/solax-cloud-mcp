@@ -499,6 +499,8 @@ Authorization: Bearer YOUR_API_KEY
 
 `GET /api/dashboard/settings` (bearer token) returns the planner and export settings (no secrets), the next 6 charge-planner runs and the next export-loop tick, or `{"enabled": false}`.
 
+`GET /api/automation/history` (bearer token) returns the last 200 charge and export decisions, newest first. Idle export runs are not recorded. Set `DECISIONS_FILE` to keep them across restarts.
+
 ## Common Patterns
 
 ### Polling for Real-Time Updates

@@ -7,9 +7,11 @@ battery is charged from the grid during the cheap window only up to that level.
 """
 
 import asyncio
+import json
 import logging
 import math
 import os
+from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -23,6 +25,8 @@ from .server import get_realtime_data_impl, set_battery_self_use_mode_impl
 logger = logging.getLogger(__name__)
 
 MAX_SEGMENT_HOURS = 24
+# Decisions kept in memory and returned by the history endpoint
+HISTORY_SIZE = 200
 
 
 def _easter(year: int) -> date:
@@ -426,6 +430,30 @@ class AutomationScheduler:
         self._write_lock = asyncio.Lock()
         # Whether the inverter is in remote control (export); None = unknown, e.g. after a restart
         self._remote_control: bool | None = None
+        self.history: deque[dict] = deque(maxlen=HISTORY_SIZE)
+        path = config.get_decisions_file()
+        if path and os.path.exists(path):
+            # A broken history file must never stop the server: skip bad lines
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in deque(f, maxlen=HISTORY_SIZE):
+                    try:
+                        self.history.append(json.loads(line))
+                    except ValueError:
+                        pass
+
+    def _record(self, kind: str, entry: dict) -> None:
+        """Keep a decision in memory and append it to DECISIONS_FILE. Never raises."""
+        entry = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "kind": kind, **entry}
+        self.history.append(entry)
+        path = config.get_decisions_file()
+        if not path:
+            return
+        # ponytail: file is never rotated; ~100 B per decision, a few dozen a day
+        try:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError:
+            logger.exception("Cannot write decision history to %s", path)
 
     async def run(self, trigger: Trigger, apply: bool) -> dict:
         """Compute a plan for `trigger` and optionally write it to the inverter."""
@@ -534,9 +562,28 @@ class AutomationScheduler:
                     async with self._write_lock:
                         await self._exit_remote_control(config.get_default_device_sn())
             self.last_export = result
+            self._record_export(result)
             now = datetime.now(timezone.utc)
             next_slot = now.replace(second=0, microsecond=0) + timedelta(minutes=15 - now.minute % 15)
             await asyncio.sleep((next_slot - now).total_seconds() + 5)
+
+    def _record_export(self, plan: dict) -> None:
+        """Log export runs that did or would do something; idle 15-minute runs are skipped."""
+        if "error" in plan:
+            self._record("export", {"error": plan["error"]})
+            return
+        execution = plan.get("execution") or {}
+        slot = plan["currentSlot"]
+        if execution.get("action", "none") == "none" and not (plan["dryRun"] and slot["export"]):
+            return
+        self._record("export", {
+            "dryRun": plan["dryRun"],
+            "socPercent": plan["socPercent"],
+            "action": execution.get("action", "discharge (dry run)"),
+            "setpoint_W": execution.get("setpoint_W"),
+            "stopSoc": execution.get("stopSoc", plan["recommendedExportFloorSoc"]),
+            "price_PLN_kWh": slot.get("price_PLN_kWh"),
+        })
 
     async def preview(self) -> dict:
         trigger = next_trigger(self.settings, datetime.now(timezone.utc))
@@ -562,6 +609,9 @@ class AutomationScheduler:
                     "applied": False,
                 }
             self.last_result = result
+            self._record("charge", {k: result.get(k) for k in (
+                "runAt", "window", "targetSoc", "gridCharge", "needFromBattery_kWh", "dryRun", "applied", "error",
+            ) if k in result})
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())

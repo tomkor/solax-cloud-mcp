@@ -309,3 +309,8 @@ def test_dashboard_settings_enabled(monkeypatch):
     assert body["automation"]["capacity_kwh"] == 21.2
     assert isinstance(body["automation"]["tz"], str)
     assert body["export"] is None
+
+
+def test_automation_history_disabled(api):
+    assert api.get("/api/automation/history").status_code == 403
+    assert api.get("/api/automation/history", headers=AUTH).json() == []

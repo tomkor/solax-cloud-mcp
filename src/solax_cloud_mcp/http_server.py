@@ -5,13 +5,17 @@ import logging
 import os
 import secrets
 from contextlib import asynccontextmanager
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .client import SolaxApiError, discharge_to_soc, exit_vpp_mode
-from .automation import AutomationScheduler, ExportSettings, Settings
+from .automation import AutomationScheduler, ExportSettings, Settings, next_trigger
 from .config import get_default_device_sn, is_automation_enabled, is_export_enabled, is_solcast_configured
 from .prices import PriceError
 from .forecast import SolcastError
@@ -30,6 +34,8 @@ EXPORT_TEST_MAX_KW = 2.0
 EXPORT_TEST_MAX_MINUTES = 5
 # The inverter stops by itself at stop_soc even if the server dies; never let a test go below this
 EXPORT_TEST_MIN_STOP_SOC = 30
+
+DASHBOARD_HTML = Path(__file__).with_name("dashboard.html")
 
 
 def get_api_key() -> str:
@@ -194,6 +200,38 @@ def create_app() -> FastAPI:
     async def get_automation_status() -> dict:
         """Battery automation status: dry-run flag, next planned run and last result. Requires bearer token."""
         return scheduler.status() if scheduler else {"enabled": False}
+
+    @app.get("/dashboard", response_class=HTMLResponse)
+    async def dashboard() -> str:
+        """Read-only dashboard page (no auth: it holds no data; its JS calls the API with the key)."""
+        return DASHBOARD_HTML.read_text(encoding="utf-8")
+
+    @app.get("/api/dashboard/settings", dependencies=[Depends(verify_api_key)])
+    async def dashboard_settings() -> dict:
+        """Planner settings and upcoming scheduler runs. Settings dataclasses hold no secrets."""
+        if not scheduler:
+            return {"enabled": False}
+        now = datetime.now(timezone.utc)
+        runs, after = [], now
+        for _ in range(6):
+            t = next_trigger(scheduler.settings, after)
+            runs.append({
+                "runAt": t.run_at.isoformat(timespec="minutes"),
+                "windowStart": t.window_start.isoformat(timespec="minutes"),
+                "window": f"{t.window[0]:02d}:00-{t.window[1]:02d}:00",
+            })
+            after = t.run_at
+        settings = asdict(scheduler.settings)
+        settings["tz"] = str(scheduler.settings.tz)
+        # Same boundary as AutomationScheduler._export_loop
+        next_tick = now.replace(second=0, microsecond=0) + timedelta(minutes=15 - now.minute % 15)
+        return {
+            "enabled": True,
+            "automation": settings,
+            "export": asdict(scheduler.export) if scheduler.export else None,
+            "upcomingRuns": runs,
+            "nextExportTick": next_tick.isoformat(timespec="minutes") if scheduler.export else None,
+        }
 
     @app.post("/api/automation/preview", dependencies=[Depends(verify_api_key)])
     async def preview_automation() -> dict:

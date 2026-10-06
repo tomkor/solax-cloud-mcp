@@ -282,3 +282,30 @@ def test_export_test_failure_restores_normal_mode(api, vpp):
 def test_export_stop_exits_remote_control(api, vpp):
     assert api.post("/api/battery/export-stop", headers=AUTH).json() == {"stopped": True}
     assert vpp["exit"] == ["SN1"]
+
+
+def test_dashboard_page_is_public(api):
+    resp = api.get("/dashboard")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+
+
+def test_dashboard_settings_disabled(api):
+    assert api.get("/api/dashboard/settings").status_code == 403
+    assert api.get("/api/dashboard/settings", headers=AUTH).json() == {"enabled": False}
+
+
+def test_dashboard_settings_enabled(monkeypatch):
+    monkeypatch.setenv("HTTP_API_KEY", API_KEY)
+    monkeypatch.setenv("AUTOMATION_ENABLED", "1")
+    monkeypatch.setenv("SOLCAST_API_KEY", "k")
+    monkeypatch.setenv("SOLCAST_RESOURCE_IDS", "site-a")
+    monkeypatch.setenv("SOLAX_DEVICE_SN", "SN1")
+    monkeypatch.setenv("BATTERY_CAPACITY_KWH", "21.2")
+    monkeypatch.setenv("AUTOMATION_DAILY_CONSUMPTION_KWH", "12")
+    body = TestClient(http_server.create_app()).get("/api/dashboard/settings", headers=AUTH).json()
+    assert body["enabled"] is True
+    assert len(body["upcomingRuns"]) == 6
+    assert body["automation"]["capacity_kwh"] == 21.2
+    assert isinstance(body["automation"]["tz"], str)
+    assert body["export"] is None

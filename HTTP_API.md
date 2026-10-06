@@ -493,6 +493,12 @@ Authorization: Bearer YOUR_API_KEY
 
 **Response (200 OK):** `{"stopped": true}`
 
+### 7. Dashboard
+
+`GET /dashboard` serves a read-only HTML page (no auth: the page holds no data). It asks once for `HTTP_API_KEY`, keeps it in the browser's `localStorage` and calls the API below with it. Live inverter data is fetched only on button click (SolaX rate limit).
+
+`GET /api/dashboard/settings` (bearer token) returns the planner and export settings (no secrets), the next 6 charge-planner runs and the next export-loop tick, or `{"enabled": false}`.
+
 ## Common Patterns
 
 ### Polling for Real-Time Updates

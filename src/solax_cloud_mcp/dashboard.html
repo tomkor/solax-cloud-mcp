@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolaX Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+:root { --bg:#f5f6f8; --card:#fff; --fg:#1d2330; --muted:#6b7385; --line:#e3e6ec; --ok:#1f9d55; --warn:#c07a00; --bad:#c0392b; --accent:#2f6fde; }
+@media (prefers-color-scheme: dark) { :root { --bg:#12151b; --card:#1b2029; --fg:#e6e9ef; --muted:#8f97a8; --line:#2a313d; --accent:#6c9cff; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,-apple-system,sans-serif; }
+header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line); }
+header h1 { font-size:24px; margin:0; }
+main { display:grid; gap:16px; padding:16px; grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr)); max-width:1400px; margin:0 auto; }
+section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; min-width:0; }
+section.wide { grid-column:1/-1; }
+h2 { font-size:18px; margin:0 0 10px; }
+.muted { color:var(--muted); }
+.err { color:var(--bad); }
+.badge { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; font-weight:600; border:1px solid currentColor; }
+.ok { color:var(--ok); } .warn { color:var(--warn); }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:10px; }
+.kpi { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+.kpi b { display:block; font-size:20px; }
+.kpi span { color:var(--muted); font-size:12px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:500; }
+.scroll { overflow-x:auto; }
+.chart { position:relative; height:240px; }
+button { font:inherit; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <h1>SolaX — automatyka baterii</h1>
+  <div><span id="updated" class="muted"></span> <button id="reload">Odśwież</button> <button id="logout">Zmień klucz</button></div>
+</header>
+<main>
+  <section><h2>Co się stanie — ładowanie z sieci</h2><div id="charge" class="muted">Ładowanie…</div></section>
+  <section><h2>Co się stanie — eksport do sieci</h2><div id="export" class="muted">Ładowanie…</div></section>
+  <section class="wide"><h2>Prognoza PV (Solcast)</h2><div id="pv-days" class="kpis"></div><div class="chart"><canvas id="pv-chart"></canvas></div><div id="pv-info" class="muted"></div></section>
+  <section class="wide"><h2>Ceny RCE (PLN/kWh netto)</h2><div class="chart"><canvas id="price-chart"></canvas></div><div id="price-info" class="muted"></div></section>
+  <section><h2>Harmonogram</h2><div id="schedule" class="muted">Ładowanie…</div></section>
+  <section><h2>Bateria — teraz</h2><div id="battery" class="muted">Dane na żywo pobierane tylko na żądanie (limit SolaX).</div><p><button id="live">Pobierz dane z falownika</button></p></section>
+  <section><h2>Ustawienia</h2><div id="settings" class="muted">Ładowanie…</div></section>
+  <section><h2>Profil zużycia (kWh/h)</h2><div class="chart"><canvas id="profile-chart"></canvas></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = v => String(v ?? "—").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtT = iso => iso ? new Date(iso).toLocaleString("pl-PL", {weekday:"short", day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"}) : "—";
+const hhmm = iso => new Date(iso).toLocaleTimeString("pl-PL", {hour:"2-digit", minute:"2-digit"});
+const kpi = (v, label) => `<div class="kpi"><b>${esc(v)}</b><span>${esc(label)}</span></div>`;
+const rows = (pairs) => `<table>${pairs.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>`;
+const badge = (dry) => dry ? '<span class="badge warn">DRY RUN</span>' : '<span class="badge ok">NA ŻYWO</span>';
+
+function key() {
+  let k = null;
+  try { k = localStorage.getItem("solaxKey"); } catch {}
+  if (!k) {
+    k = prompt("Podaj HTTP_API_KEY:");
+    if (k) try { localStorage.setItem("solaxKey", k); } catch {}
+  }
+  return k;
+}
+function forgetKey() { try { localStorage.removeItem("solaxKey"); } catch {} }
+
+async function api(path, method = "GET") {
+  const headers = {Authorization: "Bearer " + key(), "Content-Type": "application/json"};
+  const r = await fetch(path, {method, headers, body: method === "POST" ? "{}" : undefined});
+  if (r.status === 403) { forgetKey(); throw new Error("Zły klucz — odśwież stronę i podaj go ponownie"); }
+  if (!r.ok) throw new Error(`${r.status} ${(await r.json().catch(() => ({}))).detail || r.statusText}`);
+  return r.json();
+}
+async function section(id, fn) {
+  try { await fn(); } catch (e) { $(id).innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+const charts = {};
+function chart(id, config) {
+  charts[id]?.destroy();
+  const css = getComputedStyle(document.documentElement);
+  Chart.defaults.color = css.getPropertyValue("--muted").trim();
+  Chart.defaults.borderColor = css.getPropertyValue("--line").trim();
+  const scales = {...config.options?.scales, x: {ticks: {maxTicksLimit: 12, maxRotation: 0}}};
+  charts[id] = new Chart($(id), {...config, options: {maintainAspectRatio: false, interaction: {mode: "index", intersect: false}, ...config.options, scales}});
+}
+
+async function loadAutomation() {
+  const a = await api("/api/automation");
+  if (!a.enabled) { $("charge").textContent = "Automatyka wyłączona (AUTOMATION_ENABLED=0)."; $("export").textContent = "—"; return; }
+  const r = a.lastResult;
+  let h = `<p>${badge(a.dryRun)} Następne uruchomienie: <b>${fmtT(a.nextRun)}</b>, okno taniej taryfy ${esc(a.nextWindow)}</p>`;
+  if (!r) h += `<p class="muted">Brak wyniku od restartu serwera. Plan powstanie przy następnym uruchomieniu.</p>`;
+  else if (r.error) h += `<p class="err">Ostatni przebieg (${fmtT(r.runAt)}): ${esc(r.error)}</p>`;
+  else {
+    h += `<p class="muted">Ostatnia decyzja (${fmtT(r.runAt)}, okno ${esc(r.window)}):</p>`;
+    h += `<div class="kpis">${kpi(r.targetSoc + "%", "docelowy SOC")}${kpi(r.gridCharge ? "TAK" : "NIE", "ładuj z sieci")}${kpi(r.needFromBattery_kWh + " kWh", "potrzeba z baterii")}${kpi(r.applied ? "wysłano" : "nie wysłano", "do falownika")}</div>`;
+    const p = r.peakSegment || {};
+    h += rows([["Drogi okres", p.start ? `${fmtT(p.start)} – ${hhmm(p.end)} (${p.hours} h)` : "—"],
+               ["Prognoza PV w tym czasie", p.pvForecast_kWh + " kWh (" + r.percentile + ")"],
+               ["Zużycie domu w tym czasie", p.consumption_kWh + " kWh"],
+               ["Max deficyt", p.maxDeficit_kWh + " kWh"], ["Min SOC", r.minSoc + "%"],
+               ["Prognoza z", fmtT(r.forecastFetchedAt) + (r.forecastStale ? " (STARA)" : "")]]);
+  }
+  $("charge").innerHTML = h;
+
+  const e = a.export;
+  if (!e.enabled) { $("export").textContent = "Eksport wyłączony (EXPORT_ENABLED=0)."; return; }
+  const x = e.lastPlan;
+  let g = `<p>${badge(e.dryRun)} Plan liczony co 15 min.</p>`;
+  if (!x) g += `<p class="muted">Brak planu.</p>`;
+  else if (x.error) g += `<p class="err">${esc(x.error)}</p>`;
+  else {
+    const c = x.currentSlot;
+    g += `<div class="kpis">${kpi(x.socPercent + "%", "SOC")}${kpi(x.surplus_kWh + " kWh", "nadwyżka")}${kpi(x.plannedExport_kWh + " kWh", "plan sprzedaży")}${kpi(c.export ? c.dischargeSetpoint_kW + " kW" : "nie", "eksport teraz")}</div>`;
+    if (x.execution) g += `<p>Wykonano: <b>${esc(x.execution.action)}</b></p>`;
+    g += rows([["Rezerwa dla domu", x.reserveForHouse_kWh + " kWh do " + fmtT(x.horizonEnd)],
+               ["Min SOC przy eksporcie", x.recommendedExportFloorSoc + "%"], ["Min cena", x.minPrice_PLN_kWh + " PLN/kWh"],
+               ["Obciążenie domu teraz", x.liveHouseLoad_kW == null ? "—" : x.liveHouseLoad_kW + " kW"],
+               ["Prognoza PV dostępna", x.pvForecastAvailable ? "tak" : "NIE (liczone jako 0)"], ["Policzono", fmtT(x.now)]]);
+    if (x.slots.length) {
+      const rev = x.slots.reduce((s, v) => s + v.revenue_PLN, 0);
+      g += `<p class="muted">Zaplanowane sloty (przychód ~${rev.toFixed(2)} PLN):</p><div class="scroll"><table><tr><th>Od</th><th>Do</th><th>Cena</th><th>Eksport</th><th>Moc</th><th>PLN</th></tr>` +
+        x.slots.map(s => `<tr><td>${fmtT(s.start)}</td><td>${hhmm(s.end)}</td><td>${s.price_PLN_kWh}</td><td>${s.export_kWh} kWh</td><td>${s.dischargeSetpoint_kW} kW</td><td>${s.revenue_PLN}</td></tr>`).join("") + `</table></div>`;
+    } else g += `<p class="muted">Brak slotów do sprzedaży.</p>`;
+  }
+  $("export").innerHTML = g;
+}
+
+async function loadSettings() {
+  const s = await api("/api/dashboard/settings");
+  if (!s.enabled) { $("schedule").textContent = "Automatyka wyłączona."; $("settings").textContent = "—"; return; }
+  let h = `<table><tr><th>Planer ładowania</th><th>Okno</th></tr>` +
+    s.upcomingRuns.map(r => `<tr><td>${fmtT(r.runAt)}</td><td>${esc(r.window)} (od ${fmtT(r.windowStart)})</td></tr>`).join("") + `</table>`;
+  h += `<p>Pętla eksportu: ${s.nextExportTick ? "następny przebieg " + fmtT(s.nextExportTick) + ", potem co 15 min" : "wyłączona"}</p>`;
+  $("schedule").innerHTML = h;
+
+  const a = s.automation, t = a.tariff;
+  const win = w => (w || []).map(([x, y]) => `${String(x).padStart(2, "0")}–${String(y).padStart(2, "0")}`).join(", ");
+  let st = rows([["Strefa czasowa", a.tz], ["Pojemność baterii", a.capacity_kwh + " kWh"], ["Min SOC", a.min_soc + "%"],
+    ["Max SOC z sieci", a.max_grid_soc + "%"], ["Zapas bezpieczeństwa", a.safety_margin_kwh + " kWh"], ["Sprawność", a.efficiency],
+    ["Percentyl prognozy", a.percentile], ["Wyprzedzenie planera", a.lead_minutes + " min"], ["Tryb ładowania", a.dry_run ? "DRY RUN" : "na żywo"],
+    ["Taryfa — okna (zima / całość)", win(t.windows)], ["Taryfa — okna lato", t.summer_windows ? win(t.summer_windows) : "—"],
+    ["Weekendy tanie", t.weekends ? "tak" : "nie"], ["Święta tanie", t.holidays ? "tak" : "nie"]]);
+  if (s.export) {
+    const x = s.export;
+    st += `<p class="muted">Eksport:</p>` + rows([["Min cena", x.min_price_pln_kwh + " PLN/kWh"], ["Max moc", x.max_power_kw + " kW"],
+      ["Min energia w slocie", x.min_slot_kwh + " kWh"], ["Mnożnik ceny", x.price_multiplier], ["Tryb", x.dry_run ? "DRY RUN" : "na żywo"]]);
+  }
+  $("settings").innerHTML = st;
+
+  const sum = p => p ? p.reduce((x, y) => x + y, 0).toFixed(1) : null;
+  const ds = [{label: `Dzień roboczy (${sum(a.consumption_profile)} kWh)`, data: a.consumption_profile, backgroundColor: "#2f6fde"}];
+  if (a.weekend_profile) ds.push({label: `Weekend/święto (${sum(a.weekend_profile)} kWh)`, data: a.weekend_profile, backgroundColor: "#e08a1e"});
+  chart("profile-chart", {type: "bar", data: {labels: [...Array(24).keys()].map(h => h + ":00"), datasets: ds}});
+  return s.export?.min_price_pln_kwh ?? null;
+}
+
+async function loadForecast() {
+  const f = await api("/api/solar-forecast?hours=48");
+  $("pv-days").innerHTML = f.days.map(d => kpi(d.energy_kWh.p50 + " kWh", `${new Date(d.date).toLocaleDateString("pl-PL", {weekday: "short", day: "2-digit", month: "2-digit"})} (p10 ${d.energy_kWh.p10} – p90 ${d.energy_kWh.p90}), szczyt ${d.peakPower_kW} kW`)).join("")
+    + kpi(f.remainingToday_kWh + " kWh", "jeszcze dziś");
+  const labels = f.hourly.map(h => fmtT(h.time));
+  chart("pv-chart", {type: "line", data: {labels, datasets: [
+    {label: "p90", data: f.hourly.map(h => h.power_kW.p90), borderColor: "transparent", backgroundColor: "rgba(240,180,30,.2)", fill: "+1", pointRadius: 0},
+    {label: "p50", data: f.hourly.map(h => h.power_kW.p50), borderColor: "#e0a100", pointRadius: 0, tension: .3},
+    {label: "p10", data: f.hourly.map(h => h.power_kW.p10), borderColor: "transparent", pointRadius: 0},
+  ]}, options: {scales: {y: {title: {display: true, text: "kW"}}}}});
+  $("pv-info").textContent = `Pobrano ${fmtT(f.fetchedAt)}${f.stale ? " — DANE STARE (błąd Solcast)" : ""}.`;
+}
+
+async function loadPrices(minPrice) {
+  const p = await api("/api/prices?hours=48");
+  const labels = p.slots.map(s => fmtT(s.start));
+  const ds = [{label: "RCE", data: p.slots.map(s => s.price_PLN_kWh), borderColor: "#2f6fde", stepped: true, pointRadius: 0}];
+  if (minPrice != null) ds.push({label: "Min cena eksportu", data: p.slots.map(() => minPrice), borderColor: "#c0392b", borderDash: [6, 4], pointRadius: 0});
+  chart("price-chart", {type: "line", data: {labels, datasets: ds}});
+  $("price-info").textContent = p.slots.length ? `Min ${p.min}, max ${p.max} PLN/kWh. Ceny na jutro PSE publikuje po południu.` : "Brak cen.";
+}
+
+async function loadLive() {
+  $("battery").textContent = "Pobieranie…";
+  await section("battery", async () => {
+    const d = await api("/api/realtime-data", "POST");
+    const b = d.battery || {};
+    const w = v => v == null ? "—" : (v / 1000).toFixed(2) + " kW";
+    $("battery").innerHTML = `<div class="kpis">${kpi(b.soc_percent + "%", "SOC")}${kpi(w(b.chargeDischargePower_W), "ładowanie(+)/rozład.(−)")}${kpi(w(d.mppt?.totalPower_W), "PV teraz")}${kpi(w(d.meter1?.gridPower_W), "sieć (+eksport)")}</div>` +
+      rows([["Energia w baterii", b.remainingEnergy_kWh + " kWh"], ["Temperatura", b.temperature_C + " °C"], ["SOH", b.soh_percent + "%"],
+            ["Cykle", b.cycleTimes], ["Status", b.status?.description], ["Falownik", d.status?.description], ["Odczyt z", d.device?.dataTime],
+            ["PV dziś", d.energy?.dailyYield_kWh + " kWh"], ["Import / eksport dziś", `${d.meter1?.todayImportEnergy_kWh} / ${d.meter1?.todayExportEnergy_kWh} kWh`]]);
+  });
+}
+
+async function loadAll() {
+  if (!key()) { document.querySelector("main").innerHTML = "<section>Brak klucza. Odśwież stronę.</section>"; return; }
+  let minPrice = null;
+  await Promise.all([
+    section("charge", loadAutomation),
+    section("schedule", async () => { minPrice = await loadSettings(); }),
+    section("pv-info", loadForecast),
+  ]);
+  await section("price-info", () => loadPrices(minPrice));
+  $("updated").textContent = "Aktualizacja " + new Date().toLocaleTimeString("pl-PL");
+}
+
+$("reload").onclick = loadAll;
+$("live").onclick = loadLive;
+$("logout").onclick = () => { forgetKey(); loadAll(); };
+loadAll();
+setInterval(() => section("charge", loadAutomation).then(() => $("updated").textContent = "Aktualizacja " + new Date().toLocaleTimeString("pl-PL")), 60000);
+</script>
+</body>
+</html>

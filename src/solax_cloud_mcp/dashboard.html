@@ -163,7 +163,7 @@ async function loadSettings() {
 async function loadForecast() {
   const f = await api("/api/solar-forecast?hours=48");
   $("pv-days").innerHTML = f.days.map(d => kpi(d.energy_kWh.p50 + " kWh", `${new Date(d.date).toLocaleDateString("pl-PL", {weekday: "short", day: "2-digit", month: "2-digit"})} (p10 ${d.energy_kWh.p10} – p90 ${d.energy_kWh.p90}), szczyt ${d.peakPower_kW} kW`)).join("")
-    + kpi(f.remainingToday_kWh + " kWh", "jeszcze dziś");
+    + kpi(f.remainingToday_kWh.p50 + " kWh", `jeszcze dziś (p10 ${f.remainingToday_kWh.p10} – p90 ${f.remainingToday_kWh.p90})`);
   const labels = f.hourly.map(h => fmtT(h.time));
   chart("pv-chart", {type: "line", data: {labels, datasets: [
     {label: "p90", data: f.hourly.map(h => h.power_kW.p90), borderColor: "transparent", backgroundColor: "rgba(240,180,30,.2)", fill: "+1", pointRadius: 0},

@@ -12,8 +12,9 @@ Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast o
 - Microinstallation power declared to the DSO (OSD): **6.48 kW** (= PV). Connection power: 21 kW. Keep `EXPORT_MAX_POWER_KW` at or below 6.48 (now 5).
 - Net-billing deposit = RCE × **1.23** (confirmed by the owner): `EXPORT_PRICE_MULTIPLIER=1.23`, so `EXPORT_MIN_PRICE_PLN_KWH` applies to the multiplied price.
 - Export valuation: **RCE** (15-min market price from PSE). The SolaX app uses a TGE price list as an approximation, because RCE cannot be configured there.
+- **Current state (2026-10-11):** PGE confirmed the contract settles at **monthly RCEm**, not RCE. The owner filed a request to switch to RCE. Until PGE confirms the switch, hourly prices (RCE, and the TGE list in the SolaX app) do not affect the bill, so export stays in dry run.
 - Owner verified manually: battery discharge at **5 kW** works. The discharge setpoint is **battery output**: the house load is served first and only the rest is exported. So 3 kW with a 2.5 kW appliance running gives almost no export.
-- The SolaX Cloud built-in rule currently used is "discharge to 50%, max 5 kW, if export price > 1 PLN". It supports **only one condition (no AND)**, so it cannot combine the price threshold with a dynamic SOC floor. This is why the server should execute exports (see Task 3).
+- **2026-10-11:** the owner turned off all SolaX Cloud built-in rules (grid charging and grid export). Before that, the export rule was "discharge to 50%, max 5 kW, if export price > 1 PLN". It supports **only one condition (no AND)**, so it cannot combine the price threshold with a dynamic SOC floor. This is why the server should execute exports (see Task 3).
 
 ## Branches and PRs (stacked, merge in order)
 

@@ -397,11 +397,11 @@ function showLive(d) {
   $("k-bat").innerHTML = kw(b.chargeDischargePower_W);
   $("k-bat-sub").textContent = `${dec(b.remainingEnergy_kWh, 1)} kWh w baterii`;
   $("k-house").innerHTML = kw(house);
-  $("k-house-sub").textContent = `odczyt ${d.device?.dataTime ?? "—"}`;
+  $("k-house-sub").textContent = `odczyt ${fmtT(d.device?.dataTime)}`;
   $("k-grid").innerHTML = kw(m.gridPower_W);
   $("k-grid-sub").textContent = `dziś import ${dec(m.todayImportEnergy_kWh, 1)} / eksport ${dec(m.todayExportEnergy_kWh, 1)} kWh`;
   $("battery").innerHTML = rows([["Energia w baterii", dec(b.remainingEnergy_kWh, 1) + " kWh"], ["Temperatura", b.temperature_C + " °C"], ["SOH", b.soh_percent + " %"],
-    ["Cykle", b.cycleTimes], ["Status baterii", b.status?.description], ["Falownik", d.status?.description], ["Odczyt z", d.device?.dataTime]]);
+    ["Cykle", b.cycleTimes], ["Status baterii", b.status?.description], ["Falownik", d.status?.description], ["Odczyt z", fmtT(d.device?.dataTime)]]);
 }
 async function loadHistory() {
   const h = await api("/api/automation/history");

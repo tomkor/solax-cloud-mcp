@@ -77,6 +77,9 @@ thead th { background:var(--sunken); position:sticky; top:0; border-top:0; }
 table.kv th { padding-left:0; } table.kv td { text-align:right; padding-right:0; white-space:nowrap; font-family:"Fira Code",ui-monospace,monospace; }
 .scroll { overflow:auto; border:1px solid var(--border); border-radius:4px; }
 .chart { position:relative; height:220px; }
+.range { display:flex; align-items:center; gap:12px; font-size:12px; font-weight:500; color:var(--muted); }
+.range input { flex:1 1 auto; max-width:320px; accent-color:var(--pv); height:24px; }
+.range output { color:var(--ink); min-width:56px; }
 form label { display:flex; flex-direction:column; gap:6px; font-size:12px; font-weight:500; color:var(--muted); }
 form input { height:40px; padding:0 12px; border-radius:4px; border:1px solid var(--input); background:var(--surface); color:var(--ink); font:inherit; }
 @media (max-width:1100px) { .panel { grid-column:span var(--span-md,6); } .strip { grid-template-columns:repeat(3,minmax(0,1fr)); } }
@@ -112,7 +115,7 @@ form input { height:40px; padding:0 12px; border-radius:4px; border:1px solid va
     <div><span class="small muted">PV teraz</span><b id="k-pv">—</b><span class="small muted" id="k-pv-sub">&nbsp;</span></div>
     <div><span class="small muted">Bateria (+ładowanie / −rozład.)</span><b id="k-bat">—</b><span class="small muted" id="k-bat-sub">&nbsp;</span></div>
     <div><span class="small muted">Dom</span><b id="k-house">—</b><span class="small muted" id="k-house-sub">&nbsp;</span></div>
-    <div><span class="small muted">Sieć (+eksport / −import)</span><b id="k-grid">—</b><span class="small muted" id="k-grid-sub">Dane z falownika tylko na żądanie (limit SolaX).</span></div>
+    <div><span class="small muted">Sieć (+eksport / −import)</span><b id="k-grid">—</b><span class="small muted" id="k-grid-sub">Czekam na odczyt pętli eksportu…</span></div>
   </section>
 
   <div class="editbar" id="editbar" role="status" hidden>
@@ -125,8 +128,8 @@ form input { height:40px; padding:0 12px; border-radius:4px; border:1px solid va
   <div class="grid" id="grid">
     <section class="panel" data-id="charge"><header><h2>Ładowanie z sieci</h2></header><div class="body" id="charge">Ładowanie…</div></section>
     <section class="panel" data-id="export"><header><h2>Eksport do sieci</h2></header><div class="body" id="export">Ładowanie…</div></section>
-    <section class="panel" data-id="battery"><header><h2>Bateria</h2></header><div class="body" id="battery"><span class="muted">Kliknij „Odczyt z falownika”.</span></div></section>
-    <section class="panel" data-id="pv"><header><h2>Prognoza PV (Solcast)</h2></header><div class="body"><div id="pv-days" class="kpis"></div><div class="chart"><canvas id="pv-chart" role="img" aria-label="Prognoza mocy PV p10, p50, p90"></canvas></div><div id="pv-info" class="small muted"></div></div></section>
+    <section class="panel" data-id="battery"><header><h2>Bateria</h2></header><div class="body" id="battery"><span class="muted">Czekam na odczyt pętli eksportu…</span></div></section>
+    <section class="panel" data-id="pv"><header><h2>Prognoza PV (Solcast)</h2></header><div class="body"><div id="pv-days" class="kpis"></div><label class="range" for="pv-range">Wykres <input id="pv-range" type="range" min="1" max="7" value="2"> <output id="pv-range-val" class="num">2 dni</output></label><div class="chart"><canvas id="pv-chart" role="img" aria-label="Prognoza mocy PV p10, p50, p90"></canvas></div><div id="pv-info" class="small muted"></div></div></section>
     <section class="panel" data-id="schedule"><header><h2>Harmonogram</h2></header><div class="body" id="schedule">Ładowanie…</div></section>
     <section class="panel" data-id="prices"><header><h2>Ceny RCE (PLN/kWh netto)</h2></header><div class="body"><div class="chart"><canvas id="price-chart" role="img" aria-label="Ceny RCE i minimalna cena eksportu"></canvas></div><div id="price-info" class="small muted"></div></div></section>
     <section class="panel" data-id="profile"><header><h2>Profil zużycia (kWh/h)</h2></header><div class="body"><div class="chart"><canvas id="profile-chart" role="img" aria-label="Profil zużycia domu"></canvas></div></div></section>
@@ -291,6 +294,7 @@ async function loadAutomation() {
   }
   $("charge").innerHTML = h;
   if (!e.enabled) { $("export").textContent = "Eksport wyłączony (EXPORT_ENABLED=0)."; return; }
+  if (e.lastRealtime) showLive(e.lastRealtime);
   const x = e.lastPlan;
   let g = `<span class="small muted">Plan liczony co 15 min.</span>`;
   if (!x) g += `<p class="muted">Brak planu.</p>`;
@@ -340,17 +344,29 @@ async function loadSettings() {
   return s.export?.min_price_pln_kwh ?? null;
 }
 async function loadForecast() {
-  const f = await api("/api/solar-forecast?hours=48");
+  const f = await api("/api/solar-forecast?hours=168");
   const range = e => `p10 ${dec(e.p10, 1)} – p90 ${dec(e.p90, 1)}`;
   $("pv-days").innerHTML = kpi(dec(f.remainingToday_kWh.p50, 1) + " kWh", `jeszcze dziś · ${range(f.remainingToday_kWh)}`)
     + f.days.map(d => kpi(dec(d.energy_kWh.p50, 1) + " kWh", `${new Date(d.date).toLocaleDateString("pl-PL", {weekday: "short", day: "2-digit", month: "2-digit"})} · ${range(d.energy_kWh)}`)).join("");
-  const labels = f.hourly.map(h => fmtT(h.time));
-  chart("pv-chart", () => ({type: "line", data: {labels, datasets: [
-    {label: "p90", data: f.hourly.map(h => h.power_kW.p90), borderColor: "transparent", backgroundColor: css("--pv-band"), fill: "+1", pointRadius: 0, tension: .3},
-    {label: "p50", data: f.hourly.map(h => h.power_kW.p50), borderColor: css("--pv"), borderWidth: 2.5, pointRadius: 0, tension: .3},
-    {label: "p10", data: f.hourly.map(h => h.power_kW.p10), borderColor: "transparent", pointRadius: 0, tension: .3},
-  ]}, options: {scales: {y: {title: {display: true, text: "kW"}}}}}));
+  const end = f.hourly.length ? new Date(f.hourly.at(-1).time) : new Date();
+  const maxDays = Math.max(1, Math.ceil((end - Date.now()) / 864e5));
+  const slider = $("pv-range");
+  slider.max = maxDays;
+  if (+slider.value > maxDays) slider.value = maxDays;
+  slider.oninput = () => drawPv(f);
+  drawPv(f);
   $("pv-info").textContent = `Pobrano ${fmtT(f.fetchedAt)}${f.stale ? " — DANE STARE (błąd Solcast)" : ""} · pasmo = p10–p90.`;
+}
+function drawPv(f) {
+  const days = +$("pv-range").value, until = Date.now() + days * 864e5;
+  $("pv-range-val").textContent = days === 1 ? "1 dzień" : days + " dni";
+  const hourly = f.hourly.filter(h => new Date(h.time) < until);
+  const labels = hourly.map(h => fmtT(h.time));
+  chart("pv-chart", () => ({type: "line", data: {labels, datasets: [
+    {label: "p90", data: hourly.map(h => h.power_kW.p90), borderColor: "transparent", backgroundColor: css("--pv-band"), fill: "+1", pointRadius: 0, tension: .3},
+    {label: "p50", data: hourly.map(h => h.power_kW.p50), borderColor: css("--pv"), borderWidth: 2.5, pointRadius: 0, tension: .3},
+    {label: "p10", data: hourly.map(h => h.power_kW.p10), borderColor: "transparent", pointRadius: 0, tension: .3},
+  ]}, options: {scales: {y: {title: {display: true, text: "kW"}}}}}));
 }
 async function loadPrices(minPrice) {
   const p = await api("/api/prices?hours=48");
@@ -365,27 +381,27 @@ async function loadPrices(minPrice) {
 async function loadLive() {
   $("battery").textContent = "Pobieranie…";
   $("k-grid-sub").textContent = "Pobieranie…";
-  await section("battery", async () => {
-    const d = await api("/api/realtime-data", "POST");
-    const b = d.battery || {}, m = d.meter1 || {};
-    const kw = v => v == null ? "—" : dec(v / 1000) + "<small> kW</small>";
-    const phases = d.ac?.phases || [];
-    // House = inverter AC output − grid (SolaX: + export, − import); same as automation.live_house_load_kw
-    const house = phases.length && m.gridPower_W != null && phases.every(p => p.power_W != null)
-      ? Math.max(0, phases.reduce((s, p) => s + p.power_W, 0) - m.gridPower_W) : null;
-    $("k-soc").innerHTML = b.soc_percent == null ? "—" : `${b.soc_percent}<small> %</small>`;
-    $("k-soc-bar").style.width = (b.soc_percent ?? 0) + "%";
-    $("k-pv").innerHTML = kw(d.mppt?.totalPower_W);
-    $("k-pv-sub").textContent = `dziś ${dec(d.energy?.dailyYield_kWh, 1)} kWh`;
-    $("k-bat").innerHTML = kw(b.chargeDischargePower_W);
-    $("k-bat-sub").textContent = `${dec(b.remainingEnergy_kWh, 1)} kWh w baterii`;
-    $("k-house").innerHTML = kw(house);
-    $("k-house-sub").textContent = `odczyt ${d.device?.dataTime ?? "—"}`;
-    $("k-grid").innerHTML = kw(m.gridPower_W);
-    $("k-grid-sub").textContent = `dziś import ${dec(m.todayImportEnergy_kWh, 1)} / eksport ${dec(m.todayExportEnergy_kWh, 1)} kWh`;
-    $("battery").innerHTML = rows([["Energia w baterii", dec(b.remainingEnergy_kWh, 1) + " kWh"], ["Temperatura", b.temperature_C + " °C"], ["SOH", b.soh_percent + " %"],
-      ["Cykle", b.cycleTimes], ["Status baterii", b.status?.description], ["Falownik", d.status?.description], ["Odczyt z", d.device?.dataTime]]);
-  });
+  await section("battery", async () => showLive(await api("/api/realtime-data", "POST")));
+}
+function showLive(d) {
+  const b = d.battery || {}, m = d.meter1 || {};
+  const kw = v => v == null ? "—" : dec(v / 1000) + "<small> kW</small>";
+  const phases = d.ac?.phases || [];
+  // House = inverter AC output − grid (SolaX: + export, − import); same as automation.live_house_load_kw
+  const house = phases.length && m.gridPower_W != null && phases.every(p => p.power_W != null)
+    ? Math.max(0, phases.reduce((s, p) => s + p.power_W, 0) - m.gridPower_W) : null;
+  $("k-soc").innerHTML = b.soc_percent == null ? "—" : `${b.soc_percent}<small> %</small>`;
+  $("k-soc-bar").style.width = (b.soc_percent ?? 0) + "%";
+  $("k-pv").innerHTML = kw(d.mppt?.totalPower_W);
+  $("k-pv-sub").textContent = `dziś ${dec(d.energy?.dailyYield_kWh, 1)} kWh`;
+  $("k-bat").innerHTML = kw(b.chargeDischargePower_W);
+  $("k-bat-sub").textContent = `${dec(b.remainingEnergy_kWh, 1)} kWh w baterii`;
+  $("k-house").innerHTML = kw(house);
+  $("k-house-sub").textContent = `odczyt ${d.device?.dataTime ?? "—"}`;
+  $("k-grid").innerHTML = kw(m.gridPower_W);
+  $("k-grid-sub").textContent = `dziś import ${dec(m.todayImportEnergy_kWh, 1)} / eksport ${dec(m.todayExportEnergy_kWh, 1)} kWh`;
+  $("battery").innerHTML = rows([["Energia w baterii", dec(b.remainingEnergy_kWh, 1) + " kWh"], ["Temperatura", b.temperature_C + " °C"], ["SOH", b.soh_percent + " %"],
+    ["Cykle", b.cycleTimes], ["Status baterii", b.status?.description], ["Falownik", d.status?.description], ["Odczyt z", d.device?.dataTime]]);
 }
 async function loadHistory() {
   const h = await api("/api/automation/history");

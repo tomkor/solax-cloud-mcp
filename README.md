@@ -243,7 +243,7 @@ See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
 
 The plan also reports `recommendedExportFloorSoc`: the SOC floor that keeps enough energy for the house until the next off-peak window. Use it to tune a price-based export rule configured in SolaX Cloud (e.g. "discharge to X%, max 5 kW, if export price > 1 PLN"), which uses a fixed floor.
 
-`POST /api/export/preview` shows the plan. `GET /api/automation` shows the last plan under `export`.
+`POST /api/export/preview` shows the plan. `GET /api/automation` shows the last plan under `export`, and the realtime data that run read under `export.lastRealtime` (no extra SolaX call).
 
 > **Dry run by default.** With `EXPORT_DRY_RUN=0` the server sends, at the start of each export slot, SolaX remote control `soc_target_control_mode` (discharge at the slot setpoint until `recommendedExportFloorSoc`). In any other slot it exits remote control, so the inverter goes back to its normal work mode. The mode has no duration: if the server stops mid-slot, the inverter keeps discharging but stops at the floor SOC. Charge-planner and export writes never run at the same time. Disable any SolaX Cloud price rule that also discharges, so the two do not fight. (`push_power` mode is accepted but ignored by the X3-NEO-LV.)
 

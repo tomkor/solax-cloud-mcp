@@ -4,70 +4,249 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SolaX Dashboard</title>
+<script>
+// Apply the theme before first paint so the page never flashes the wrong colours
+(function () {
+  var pref = "auto"; try { pref = localStorage.getItem("solaxTheme") || "auto"; } catch (e) {}
+  var dark = pref === "auto" ? matchMedia("(prefers-color-scheme: dark)").matches : pref === "dark";
+  document.documentElement.dataset.theme = dark ? "dark" : "light";
+})();
+</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Fira+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
-:root { --bg:#f5f6f8; --card:#fff; --fg:#1d2330; --muted:#6b7385; --line:#e3e6ec; --ok:#1f9d55; --warn:#c07a00; --bad:#c0392b; --accent:#2f6fde; }
-@media (prefers-color-scheme: dark) { :root { --bg:#12151b; --card:#1b2029; --fg:#e6e9ef; --muted:#8f97a8; --line:#2a313d; --accent:#6c9cff; } }
+:root { --bg:#f5f4f0; --surface:#fff; --sunken:#ebe9e3; --ink:#1a1f24; --muted:#545b63; --border:#d6d3cb; --input:#737b84;
+  --primary:#1e2a36; --on-primary:#fff; --link:#0e5f7a; --focus:#0e7490; --ok:#166534; --ok-tint:#e8f0eb; --warn:#854d0e; --warn-tint:#f3ede7;
+  --bad:#b91c1c; --bad-tint:#f8e8e8; --pv:#e0a43a; --pv-band:rgba(224,164,58,.28); --grid-line:#e3e0d8; }
+[data-theme="dark"] { --bg:#0e1316; --surface:#161d21; --sunken:#1f292e; --ink:#e7e5df; --muted:#a3abb3; --border:#2c373e; --input:#6b7680;
+  --primary:#e7e5df; --on-primary:#0e1316; --link:#5cc8e6; --focus:#5cc8e6; --ok:#4ade80; --ok-tint:#1c342c; --warn:#facc15; --warn-tint:#313220;
+  --bad:#f87171; --bad-tint:#31272b; --pv-band:rgba(224,164,58,.32); --grid-line:#243036; }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,-apple-system,sans-serif; }
-header { display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line); }
-header h1 { font-size:24px; margin:0; }
-main { display:grid; gap:16px; padding:16px; grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr)); max-width:1400px; margin:0 auto; }
-section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; min-width:0; }
-section.wide { grid-column:1/-1; }
-h2 { font-size:18px; margin:0 0 10px; }
-.muted { color:var(--muted); }
+body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 "Fira Sans",system-ui,sans-serif; }
+.num, .kpi b, td.n { font-family:"Fira Code",ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+button { font:inherit; cursor:pointer; height:40px; padding:0 14px; border-radius:8px; border:1px solid var(--input); background:var(--surface); color:var(--ink);
+  display:inline-flex; align-items:center; gap:8px; transition:background-color 150ms,color 150ms; }
+button:focus-visible, input:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+button.primary, button[aria-pressed="true"] { background:var(--primary); color:var(--on-primary); border-color:var(--primary); font-weight:500; }
+button.icon { width:40px; padding:0; justify-content:center; }
+button.sm { height:32px; padding:0 8px; border-radius:4px; border-color:var(--border); font-size:12px; }
+svg.i { width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; flex-shrink:0; }
+header { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; padding:14px 32px; border-bottom:1px solid var(--border); background:var(--surface); }
+.brand { display:flex; align-items:center; gap:12px; flex-grow:1; }
+.brand h1 { margin:0; font-size:16px; line-height:20px; font-weight:600; }
+.mark { width:28px; height:28px; border-radius:4px; overflow:hidden; display:grid; grid-template-rows:2fr 3fr 2fr 3fr; }
+.row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.muted { color:var(--muted); } .small { font-size:12px; }
 .err { color:var(--bad); }
-.badge { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; font-weight:600; border:1px solid currentColor; }
-.ok { color:var(--ok); } .warn { color:var(--warn); }
-.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:10px; }
-.kpi { border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
-.kpi b { display:block; font-size:20px; }
-.kpi span { color:var(--muted); font-size:12px; }
+.badge { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 10px; border-radius:999px; font-size:12px; font-weight:500; white-space:nowrap; }
+.badge::before { content:""; width:8px; height:8px; border-radius:2px; background:currentColor; }
+.badge.ok { background:var(--ok-tint); color:var(--ok); } .badge.ok::before { border-radius:50%; }
+.badge.warn { background:var(--warn-tint); color:var(--warn); }
+.badge.bad { background:var(--bad-tint); color:var(--bad); } .badge.bad::before { transform:rotate(45deg); }
+main { max-width:1440px; margin:0 auto; padding:24px 32px 48px; display:flex; flex-direction:column; gap:16px; }
+.strip { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--border); border-radius:8px; background:var(--surface); overflow:hidden; }
+.strip > div { padding:16px 20px; display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--border); min-width:0; }
+.strip > div:last-child { border-right:0; }
+.strip b { font:500 30px/36px "Fira Code",ui-monospace,monospace; }
+.strip b small { font-size:15px; color:var(--muted); }
+.meter { height:6px; border-radius:3px; background:var(--sunken); overflow:hidden; } .meter i { display:block; height:100%; background:var(--ok); }
+.editbar { display:flex; flex-wrap:wrap; align-items:center; gap:12px 16px; padding:12px 16px; border:1px dashed var(--focus); border-radius:8px; background:var(--surface); }
+.editbar[hidden] { display:none; }
+.editbar .hint { flex:1 1 320px; }
+.chip { height:32px; border-radius:999px; border-style:dashed; font-size:13px; }
+.grid { display:grid; grid-template-columns:repeat(12,minmax(0,1fr)); gap:16px; align-items:start; }
+.panel { grid-column:span var(--span,4); min-width:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; display:flex; flex-direction:column; transition:opacity 150ms,border-color 150ms; }
+.panel[hidden] { display:none; }
+.panel > header { padding:10px 12px 10px 16px; gap:8px; flex-wrap:nowrap; background:none; min-height:49px; }
+.panel h2 { margin:0; font-size:15px; line-height:20px; font-weight:600; flex-grow:1; }
+.panel .body { padding:16px; display:flex; flex-direction:column; gap:12px; min-width:0; }
+.tools, .grip { display:none; }
+.editing .panel { border-style:dashed; border-color:var(--input); }
+.editing .tools { display:flex; gap:4px; }
+.editing .grip { display:inline-flex; color:var(--muted); cursor:grab; }
+.panel.dragging { opacity:.4; } .panel.over { border-color:var(--focus); }
+.kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; }
+.kpi { padding:10px 12px; border-radius:8px; background:var(--sunken); display:flex; flex-direction:column; min-width:0; }
+.kpi span { font-size:12px; color:var(--muted); } .kpi b { font-size:20px; line-height:28px; font-weight:500; }
+.kpi.flat { background:none; padding:0; } .kpi.flat b { font-size:15px; line-height:22px; }
 table { width:100%; border-collapse:collapse; font-size:13px; }
-th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:var(--muted); font-weight:500; }
-.scroll { overflow:auto; }
-.chart { position:relative; height:240px; }
-button { font:inherit; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+th, td { text-align:left; padding:7px 12px; border-top:1px solid var(--border); vertical-align:top; }
+th { color:var(--muted); font-weight:500; font-size:12px; }
+thead th { background:var(--sunken); position:sticky; top:0; border-top:0; }
+table.kv th { padding-left:0; } table.kv td { text-align:right; padding-right:0; white-space:nowrap; font-family:"Fira Code",ui-monospace,monospace; }
+.scroll { overflow:auto; border:1px solid var(--border); border-radius:4px; }
+.chart { position:relative; height:220px; }
+form label { display:flex; flex-direction:column; gap:6px; font-size:12px; font-weight:500; color:var(--muted); }
+form input { height:40px; padding:0 12px; border-radius:4px; border:1px solid var(--input); background:var(--surface); color:var(--ink); font:inherit; }
+@media (max-width:1100px) { .panel { grid-column:span var(--span-md,6); } .strip { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:720px) { header, main { padding-left:16px; padding-right:16px; } .panel { grid-column:span 12; }
+  .strip { grid-template-columns:repeat(2,minmax(0,1fr)); } .strip > div { border-bottom:1px solid var(--border); } }
+@media (prefers-reduced-motion:reduce) { * { transition:none !important; } }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="M15 18l-6-6 6-6"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M9 18l6-6-6-6"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></symbol>
+</svg>
 <header>
-  <h1>SolaX — automatyka baterii</h1>
-  <div><span id="updated" class="muted"></span> <button id="reload">Odśwież</button> <button id="logout">Zmień klucz</button></div>
+  <div class="brand">
+    <div class="mark" aria-hidden="true"><i style="background:#e0a43a"></i><i style="background:#f2dc8c"></i><i style="background:#c9ab7c"></i><i style="background:#3d3a36"></i></div>
+    <div><h1>SolaX · automatyka baterii</h1><div class="small muted" id="updated">—</div></div>
+  </div>
+  <div class="row" id="mode-badges"></div>
+  <div class="row">
+    <button id="reload"><svg class="i" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>Odśwież</button>
+    <button id="live"><svg class="i" viewBox="0 0 24 24"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>Odczyt z falownika</button>
+    <button id="edit" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>Edytuj układ</button>
+    <button id="theme" class="icon" aria-label="Zmień motyw" title="Zmień motyw"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
+    <button id="logout" class="icon" aria-label="Zmień klucz API" title="Zmień klucz API"><svg class="i" viewBox="0 0 24 24"><circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3L21 2M16 7l3 3M18 5l2 2"/></svg></button>
+  </div>
 </header>
 <main>
-  <section><h2>Co się stanie — ładowanie z sieci</h2><div id="charge" class="muted">Ładowanie…</div></section>
-  <section><h2>Co się stanie — eksport do sieci</h2><div id="export" class="muted">Ładowanie…</div></section>
-  <section class="wide"><h2>Prognoza PV (Solcast)</h2><div id="pv-days" class="kpis"></div><div class="chart"><canvas id="pv-chart"></canvas></div><div id="pv-info" class="muted"></div></section>
-  <section class="wide"><h2>Ceny RCE (PLN/kWh netto)</h2><div class="chart"><canvas id="price-chart"></canvas></div><div id="price-info" class="muted"></div></section>
-  <section><h2>Harmonogram</h2><div id="schedule" class="muted">Ładowanie…</div></section>
-  <section><h2>Bateria — teraz</h2><div id="battery" class="muted">Dane na żywo pobierane tylko na żądanie (limit SolaX).</div><p><button id="live">Pobierz dane z falownika</button></p></section>
-  <section class="wide"><h2>Historia decyzji</h2><div id="history" class="muted">Ładowanie…</div></section>
-  <section><h2>Ustawienia</h2><div id="settings" class="muted">Ładowanie…</div></section>
-  <section><h2>Profil zużycia (kWh/h)</h2><div class="chart"><canvas id="profile-chart"></canvas></div></section>
+  <section class="strip" aria-label="Stan teraz">
+    <div><span class="small muted">Bateria SOC</span><b id="k-soc">—</b><div class="meter" aria-hidden="true"><i id="k-soc-bar" style="width:0"></i></div></div>
+    <div><span class="small muted">PV teraz</span><b id="k-pv">—</b><span class="small muted" id="k-pv-sub">&nbsp;</span></div>
+    <div><span class="small muted">Bateria (+ładowanie / −rozład.)</span><b id="k-bat">—</b><span class="small muted" id="k-bat-sub">&nbsp;</span></div>
+    <div><span class="small muted">Dom</span><b id="k-house">—</b><span class="small muted" id="k-house-sub">&nbsp;</span></div>
+    <div><span class="small muted">Sieć (+eksport / −import)</span><b id="k-grid">—</b><span class="small muted" id="k-grid-sub">Dane z falownika tylko na żądanie (limit SolaX).</span></div>
+  </section>
+
+  <div class="editbar" id="editbar" role="status" hidden>
+    <span class="hint">Przeciągnij panel albo użyj strzałek. Szerokość zmienisz przyciskiem „n/12”. Układ zapisuje się w tej przeglądarce.</span>
+    <span class="row" id="hidden-chips"></span>
+    <button id="reset-layout">Przywróć domyślny</button>
+    <button id="edit-done" class="primary">Gotowe</button>
+  </div>
+
+  <div class="grid" id="grid">
+    <section class="panel" data-id="charge"><header><h2>Ładowanie z sieci</h2></header><div class="body" id="charge">Ładowanie…</div></section>
+    <section class="panel" data-id="export"><header><h2>Eksport do sieci</h2></header><div class="body" id="export">Ładowanie…</div></section>
+    <section class="panel" data-id="battery"><header><h2>Bateria</h2></header><div class="body" id="battery"><span class="muted">Kliknij „Odczyt z falownika”.</span></div></section>
+    <section class="panel" data-id="pv"><header><h2>Prognoza PV (Solcast)</h2></header><div class="body"><div id="pv-days" class="kpis"></div><div class="chart"><canvas id="pv-chart" role="img" aria-label="Prognoza mocy PV p10, p50, p90"></canvas></div><div id="pv-info" class="small muted"></div></div></section>
+    <section class="panel" data-id="schedule"><header><h2>Harmonogram</h2></header><div class="body" id="schedule">Ładowanie…</div></section>
+    <section class="panel" data-id="prices"><header><h2>Ceny RCE (PLN/kWh netto)</h2></header><div class="body"><div class="chart"><canvas id="price-chart" role="img" aria-label="Ceny RCE i minimalna cena eksportu"></canvas></div><div id="price-info" class="small muted"></div></div></section>
+    <section class="panel" data-id="profile"><header><h2>Profil zużycia (kWh/h)</h2></header><div class="body"><div class="chart"><canvas id="profile-chart" role="img" aria-label="Profil zużycia domu"></canvas></div></div></section>
+    <section class="panel" data-id="history"><header><h2>Historia decyzji</h2></header><div class="body" id="history">Ładowanie…</div></section>
+    <section class="panel" data-id="settings"><header><h2>Ustawienia</h2></header><div class="body" id="settings">Ładowanie…</div></section>
+  </div>
 </main>
 <script>
 const $ = id => document.getElementById(id);
 const esc = v => String(v ?? "—").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const fmtT = iso => iso ? new Date(iso).toLocaleString("pl-PL", {weekday:"short", day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"}) : "—";
 const hhmm = iso => new Date(iso).toLocaleTimeString("pl-PL", {hour:"2-digit", minute:"2-digit"});
-const kpi = (v, label) => `<div class="kpi"><b>${esc(v)}</b><span>${esc(label)}</span></div>`;
-const rows = (pairs) => `<table>${pairs.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>`;
-const badge = (dry) => dry ? '<span class="badge warn">DRY RUN</span>' : '<span class="badge ok">NA ŻYWO</span>';
+const dec = (v, d = 2) => v == null || isNaN(v) ? "—" : Number(v).toLocaleString("pl-PL", {minimumFractionDigits: d, maximumFractionDigits: d});
+const kpi = (v, label, flat) => `<div class="kpi${flat ? " flat" : ""}"><span>${esc(label)}</span><b>${esc(v)}</b></div>`;
+const rows = (pairs) => `<table class="kv">${pairs.map(([k, v]) => `<tr><th>${esc(k)}</th><td>${esc(v)}</td></tr>`).join("")}</table>`;
+const badge = (dry, what = "") => dry ? `<span class="badge warn">${what}DRY RUN</span>` : `<span class="badge ok">${what}NA ŻYWO</span>`;
+const charts = {}, chartCfg = {};
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
+// --- Panel layout: order, width (of 12 columns) and hidden panels, kept per browser ---
+const LAYOUT_KEY = "solaxLayout";
+const PANELS = [...document.querySelectorAll(".panel")].map(p => p.dataset.id);
+const DEFAULT_LAYOUT = {order: PANELS, spans: {charge: 4, export: 4, battery: 4, pv: 8, schedule: 4, prices: 8, profile: 4, history: 8, settings: 4}, hidden: []};
+const SPANS = [4, 6, 8, 12];
+let layout = structuredClone(DEFAULT_LAYOUT);
+try {
+  const s = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "null");
+  if (s && Array.isArray(s.order)) {
+    // Keep only known panels; panels added in a later version go at the end
+    const order = s.order.filter(id => PANELS.includes(id));
+    layout = {order: [...order, ...PANELS.filter(id => !order.includes(id))],
+              spans: {...DEFAULT_LAYOUT.spans, ...s.spans}, hidden: (s.hidden || []).filter(id => PANELS.includes(id))};
+  }
+} catch {}
+const panel = id => document.querySelector(`.panel[data-id="${id}"]`);
+let dragId = null;
+
+for (const id of PANELS) {
+  const p = panel(id), head = p.querySelector("header"), title = p.querySelector("h2").textContent;
+  head.insertAdjacentHTML("afterbegin", `<span class="grip" aria-hidden="true"><svg class="i"><use href="#i-grip"/></svg></span>`);
+  head.insertAdjacentHTML("beforeend", `<div class="tools">
+    <button class="sm icon" data-act="-1" aria-label="Przesuń „${title}” wcześniej"><svg class="i"><use href="#i-left"/></svg></button>
+    <button class="sm icon" data-act="1" aria-label="Przesuń „${title}” dalej"><svg class="i"><use href="#i-right"/></svg></button>
+    <button class="sm num" data-act="span" aria-label="Zmień szerokość „${title}”"></button>
+    <button class="sm icon" data-act="hide" aria-label="Ukryj „${title}”"><svg class="i"><use href="#i-x"/></svg></button></div>`);
+  head.querySelector(".tools").onclick = e => {
+    const act = e.target.closest("button")?.dataset.act;
+    if (act === "span") layout.spans[id] = SPANS[(SPANS.indexOf(layout.spans[id]) + 1) % SPANS.length];
+    else if (act === "hide") layout.hidden.push(id);
+    else if (act) move(id, Number(act));
+    saveLayout();
+  };
+  p.addEventListener("dragstart", e => { dragId = id; p.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", id); });
+  p.addEventListener("dragend", () => { dragId = null; document.querySelectorAll(".panel").forEach(x => x.classList.remove("dragging", "over")); });
+  p.addEventListener("dragover", e => { if (!dragId || dragId === id) return; e.preventDefault(); p.classList.add("over"); });
+  p.addEventListener("dragleave", () => p.classList.remove("over"));
+  p.addEventListener("drop", e => {
+    e.preventDefault();
+    if (!dragId || dragId === id) return;
+    layout.order = layout.order.filter(x => x !== dragId);
+    layout.order.splice(layout.order.indexOf(id), 0, dragId);
+    saveLayout();
+  });
+}
+function move(id, delta) {
+  // Swap with the nearest visible neighbour so hidden panels don't swallow a click
+  const visible = layout.order.filter(x => !layout.hidden.includes(x));
+  const other = visible[visible.indexOf(id) + delta];
+  if (!other) return;
+  const o = layout.order, a = o.indexOf(id), b = o.indexOf(other);
+  [o[a], o[b]] = [o[b], o[a]];
+}
+function saveLayout() {
+  try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch {}
+  applyLayout();
+}
+function applyLayout() {
+  const editing = document.body.classList.contains("editing");
+  for (const id of layout.order) {
+    const p = panel(id), span = layout.spans[id] || 4;
+    $("grid").append(p);
+    p.style.setProperty("--span", span);
+    p.style.setProperty("--span-md", span >= 8 ? 12 : 6);
+    p.hidden = layout.hidden.includes(id);
+    p.draggable = editing;
+    p.querySelector('[data-act="span"]').textContent = span + "/12";
+  }
+  $("hidden-chips").innerHTML = layout.hidden.map(id =>
+    `<button class="chip" data-show="${id}">+ ${esc(panel(id).querySelector("h2").textContent)}</button>`).join("");
+  Object.values(charts).forEach(c => c.resize());
+}
+function setEditing(on) {
+  document.body.classList.toggle("editing", on);
+  $("edit").setAttribute("aria-pressed", on);
+  $("editbar").hidden = !on;
+  applyLayout();
+}
+$("edit").onclick = () => setEditing(!document.body.classList.contains("editing"));
+$("edit-done").onclick = () => setEditing(false);
+$("reset-layout").onclick = () => { layout = structuredClone(DEFAULT_LAYOUT); saveLayout(); };
+$("hidden-chips").onclick = e => {
+  const id = e.target.closest("[data-show]")?.dataset.show;
+  if (id) { layout.hidden = layout.hidden.filter(x => x !== id); saveLayout(); }
+};
+applyLayout();
+
+$("theme").onclick = () => {
+  const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("solaxTheme", t); } catch {}
+  for (const [id, cfg] of Object.entries(chartCfg)) chart(id, cfg());
+};
+
+// --- API ---
 function key() {
   let k = null;
   try { k = localStorage.getItem("solaxKey"); } catch {}
-  if (!k) {
-    k = prompt("Podaj HTTP_API_KEY:");
-    if (k) try { localStorage.setItem("solaxKey", k); } catch {}
-  }
   return k;
 }
 function forgetKey() { try { localStorage.removeItem("solaxKey"); } catch {} }
-
 async function api(path, method = "GET") {
   const headers = {Authorization: "Bearer " + key(), "Content-Type": "application/json"};
   const r = await fetch(path, {method, headers, body: method === "POST" ? "{}" : undefined});
@@ -78,136 +257,161 @@ async function api(path, method = "GET") {
 async function section(id, fn) {
   try { await fn(); } catch (e) { $(id).innerHTML = `<span class="err">${esc(e.message)}</span>`; }
 }
-
-const charts = {};
-function chart(id, config) {
+// cfg is a function so a theme change can rebuild the chart with the new colours
+function chart(id, cfg) {
+  if (typeof cfg === "function") { chartCfg[id] = cfg; cfg = cfg(); }
   charts[id]?.destroy();
-  const css = getComputedStyle(document.documentElement);
-  Chart.defaults.color = css.getPropertyValue("--muted").trim();
-  Chart.defaults.borderColor = css.getPropertyValue("--line").trim();
-  const scales = {...config.options?.scales, x: {ticks: {maxTicksLimit: 12, maxRotation: 0}}};
-  charts[id] = new Chart($(id), {...config, options: {maintainAspectRatio: false, interaction: {mode: "index", intersect: false}, ...config.options, scales}});
+  Chart.defaults.color = css("--muted");
+  Chart.defaults.borderColor = css("--grid-line");
+  Chart.defaults.font.family = '"Fira Sans", system-ui, sans-serif';
+  const scales = {...cfg.options?.scales, x: {grid: {display: false}, ticks: {maxTicksLimit: 12, maxRotation: 0}}};
+  charts[id] = new Chart($(id), {...cfg, options: {maintainAspectRatio: false, interaction: {mode: "index", intersect: false},
+    plugins: {legend: {labels: {boxWidth: 12, boxHeight: 12}}}, ...cfg.options, scales}});
 }
 
 async function loadAutomation() {
   const a = await api("/api/automation");
+  const e = a.export;
+  $("mode-badges").innerHTML = (a.enabled ? badge(a.dryRun, "Ładowanie: ") : '<span class="badge bad">Ładowanie: WYŁ.</span>')
+    + (e.enabled ? badge(e.dryRun, "Eksport: ") : '<span class="badge bad">Eksport: WYŁ.</span>');
   if (!a.enabled) { $("charge").textContent = "Automatyka wyłączona (AUTOMATION_ENABLED=0)."; $("export").textContent = "—"; return; }
   const r = a.lastResult;
-  let h = `<p>${badge(a.dryRun)} Następne uruchomienie: <b>${fmtT(a.nextRun)}</b>, okno taniej taryfy ${esc(a.nextWindow)}</p>`;
+  let h = `<div class="kpis">${kpi(fmtT(a.nextRun), "następne uruchomienie", true)}${kpi(a.nextWindow, "okno taniej taryfy", true)}</div>`;
   if (!r) h += `<p class="muted">Brak wyniku od restartu serwera. Plan powstanie przy następnym uruchomieniu.</p>`;
   else if (r.error) h += `<p class="err">Ostatni przebieg (${fmtT(r.runAt)}): ${esc(r.error)}</p>`;
   else {
-    h += `<p class="muted">Ostatnia decyzja (${fmtT(r.runAt)}, okno ${esc(r.window)}):</p>`;
-    h += `<div class="kpis">${kpi(r.targetSoc + "%", "docelowy SOC")}${kpi(r.gridCharge ? "TAK" : "NIE", "ładuj z sieci")}${kpi(r.needFromBattery_kWh + " kWh", "potrzeba z baterii")}${kpi(r.applied ? "wysłano" : "nie wysłano", "do falownika")}</div>`;
+    h += `<span class="small muted">Ostatnia decyzja (${fmtT(r.runAt)}, okno ${esc(r.window)}):</span>`;
+    h += `<div class="kpis">${kpi(r.targetSoc + " %", "docelowy SOC")}${kpi(r.gridCharge ? "TAK" : "NIE", "ładuj z sieci")}${kpi(dec(r.needFromBattery_kWh, 1) + " kWh", "potrzeba z baterii")}${kpi(r.applied ? "wysłano" : "nie wysłano", "wynik")}</div>`;
     const p = r.peakSegment || {};
     h += rows([["Drogi okres", p.start ? `${fmtT(p.start)} – ${hhmm(p.end)} (${p.hours} h)` : "—"],
-               ["Prognoza PV w tym czasie", p.pvForecast_kWh + " kWh (" + r.percentile + ")"],
-               ["Zużycie domu w tym czasie", p.consumption_kWh + " kWh"],
-               ["Max deficyt", p.maxDeficit_kWh + " kWh"], ["Min SOC", r.minSoc + "%"],
+               ["Prognoza PV w tym czasie", dec(p.pvForecast_kWh, 1) + " kWh (" + r.percentile + ")"],
+               ["Zużycie domu w tym czasie", dec(p.consumption_kWh, 1) + " kWh"],
+               ["Max deficyt", dec(p.maxDeficit_kWh, 1) + " kWh"], ["Min SOC", r.minSoc + " %"],
                ["Prognoza z", fmtT(r.forecastFetchedAt) + (r.forecastStale ? " (STARA)" : "")]]);
   }
   $("charge").innerHTML = h;
-
-  const e = a.export;
   if (!e.enabled) { $("export").textContent = "Eksport wyłączony (EXPORT_ENABLED=0)."; return; }
   const x = e.lastPlan;
-  let g = `<p>${badge(e.dryRun)} Plan liczony co 15 min.</p>`;
+  let g = `<span class="small muted">Plan liczony co 15 min.</span>`;
   if (!x) g += `<p class="muted">Brak planu.</p>`;
   else if (x.error) g += `<p class="err">${esc(x.error)}</p>`;
   else {
     const c = x.currentSlot;
-    g += `<div class="kpis">${kpi(x.socPercent + "%", "SOC")}${kpi(x.surplus_kWh + " kWh", "nadwyżka")}${kpi(x.plannedExport_kWh + " kWh", "plan sprzedaży")}${kpi(c.export ? c.dischargeSetpoint_kW + " kW" : "nie", "eksport teraz")}</div>`;
+    g += `<div class="kpis">${kpi(x.socPercent + " %", "SOC")}${kpi(dec(x.surplus_kWh, 1) + " kWh", "nadwyżka")}${kpi(dec(x.plannedExport_kWh, 1) + " kWh", "plan sprzedaży")}${kpi(c.export ? dec(c.dischargeSetpoint_kW, 1) + " kW" : "nie", "eksport teraz")}</div>`;
     if (x.execution) g += `<p>Wykonano: <b>${esc(x.execution.action)}</b></p>`;
-    g += rows([["Rezerwa dla domu", x.reserveForHouse_kWh + " kWh do " + fmtT(x.horizonEnd)],
-               ["Min SOC przy eksporcie", x.recommendedExportFloorSoc + "%"], ["Min cena", x.minPrice_PLN_kWh + " PLN/kWh"],
-               ["Obciążenie domu teraz", x.liveHouseLoad_kW == null ? "—" : x.liveHouseLoad_kW + " kW"],
-               ["Prognoza PV dostępna", x.pvForecastAvailable ? "tak" : "NIE (liczone jako 0)"], ["Policzono", fmtT(x.now)]]);
     if (x.slots.length) {
       const rev = x.slots.reduce((s, v) => s + v.revenue_PLN, 0);
-      g += `<p class="muted">Zaplanowane sloty (przychód ~${rev.toFixed(2)} PLN):</p><div class="scroll"><table><tr><th>Od</th><th>Do</th><th>Cena</th><th>Eksport</th><th>Moc</th><th>PLN</th></tr>` +
-        x.slots.map(s => `<tr><td>${fmtT(s.start)}</td><td>${hhmm(s.end)}</td><td>${s.price_PLN_kWh}</td><td>${s.export_kWh} kWh</td><td>${s.dischargeSetpoint_kW} kW</td><td>${s.revenue_PLN}</td></tr>`).join("") + `</table></div>`;
+      g += `<span class="small muted">Zaplanowane sloty (przychód ~${dec(rev)} PLN):</span><div class="scroll" style="max-height:200px"><table><thead><tr><th>Od</th><th>Do</th><th>Cena</th><th>Eksport</th><th>Moc</th><th>PLN</th></tr></thead><tbody>` +
+        x.slots.map(s => `<tr><td class="n">${fmtT(s.start)}</td><td class="n">${hhmm(s.end)}</td><td class="n">${dec(s.price_PLN_kWh)}</td><td class="n">${dec(s.export_kWh)} kWh</td><td class="n">${dec(s.dischargeSetpoint_kW, 1)} kW</td><td class="n">${dec(s.revenue_PLN)}</td></tr>`).join("") + `</tbody></table></div>`;
     } else g += `<p class="muted">Brak slotów do sprzedaży.</p>`;
+    g += rows([["Rezerwa dla domu", dec(x.reserveForHouse_kWh, 1) + " kWh do " + fmtT(x.horizonEnd)],
+               ["Min SOC przy eksporcie", x.recommendedExportFloorSoc + " %"], ["Min cena", dec(x.minPrice_PLN_kWh) + " PLN/kWh"],
+               ["Obciążenie domu teraz", x.liveHouseLoad_kW == null ? "—" : dec(x.liveHouseLoad_kW) + " kW"],
+               ["Prognoza PV dostępna", x.pvForecastAvailable ? "tak" : "NIE (liczone jako 0)"], ["Policzono", fmtT(x.now)]]);
   }
   $("export").innerHTML = g;
 }
-
 async function loadSettings() {
   const s = await api("/api/dashboard/settings");
   if (!s.enabled) { $("schedule").textContent = "Automatyka wyłączona."; $("settings").textContent = "—"; return; }
-  let h = `<table><tr><th>Planer ładowania</th><th>Okno</th></tr>` +
-    s.upcomingRuns.map(r => `<tr><td>${fmtT(r.runAt)}</td><td>${esc(r.window)} (od ${fmtT(r.windowStart)})</td></tr>`).join("") + `</table>`;
-  h += `<p>Pętla eksportu: ${s.nextExportTick ? "następny przebieg " + fmtT(s.nextExportTick) + ", potem co 15 min" : "wyłączona"}</p>`;
+  let h = `<div class="scroll"><table><thead><tr><th>Planer ładowania</th><th>Okno</th></tr></thead><tbody>` +
+    s.upcomingRuns.map(r => `<tr><td class="n">${fmtT(r.runAt)}</td><td>${esc(r.window)} <span class="muted">(od ${fmtT(r.windowStart)})</span></td></tr>`).join("") + `</tbody></table></div>`;
+  h += `<span class="small muted">Pętla eksportu: ${s.nextExportTick ? "następny przebieg " + fmtT(s.nextExportTick) + ", potem co 15 min" : "wyłączona"}</span>`;
   $("schedule").innerHTML = h;
-
   const a = s.automation, t = a.tariff;
   const win = w => (w || []).map(([x, y]) => `${String(x).padStart(2, "0")}–${String(y).padStart(2, "0")}`).join(", ");
-  let st = rows([["Strefa czasowa", a.tz], ["Pojemność baterii", a.capacity_kwh + " kWh"], ["Min SOC", a.min_soc + "%"],
-    ["Max SOC z sieci", a.max_grid_soc + "%"], ["Zapas bezpieczeństwa", a.safety_margin_kwh + " kWh"], ["Sprawność", a.efficiency],
+  let st = rows([["Strefa czasowa", a.tz], ["Pojemność baterii", dec(a.capacity_kwh, 1) + " kWh"], ["Min SOC", a.min_soc + " %"],
+    ["Max SOC z sieci", a.max_grid_soc + " %"], ["Zapas bezpieczeństwa", dec(a.safety_margin_kwh, 1) + " kWh"], ["Sprawność", dec(a.efficiency)],
     ["Percentyl prognozy", a.percentile], ["Wyprzedzenie planera", a.lead_minutes + " min"], ["Tryb ładowania", a.dry_run ? "DRY RUN" : "na żywo"],
     ["Taryfa — okna (zima / całość)", win(t.windows)], ["Taryfa — okna lato", t.summer_windows ? win(t.summer_windows) : "—"],
     ["Weekendy tanie", t.weekends ? "tak" : "nie"], ["Święta tanie", t.holidays ? "tak" : "nie"]]);
   if (s.export) {
     const x = s.export;
-    st += `<p class="muted">Eksport:</p>` + rows([["Min cena", x.min_price_pln_kwh + " PLN/kWh"], ["Max moc", x.max_power_kw + " kW"],
-      ["Min energia w slocie", x.min_slot_kwh + " kWh"], ["Mnożnik ceny", x.price_multiplier], ["Tryb", x.dry_run ? "DRY RUN" : "na żywo"]]);
+    st += `<span class="small muted">Eksport</span>` + rows([["Min cena", dec(x.min_price_pln_kwh) + " PLN/kWh"], ["Max moc", dec(x.max_power_kw, 1) + " kW"],
+      ["Min energia w slocie", dec(x.min_slot_kwh) + " kWh"], ["Mnożnik ceny", x.price_multiplier], ["Tryb", x.dry_run ? "DRY RUN" : "na żywo"]]);
   }
   $("settings").innerHTML = st;
-
-  const sum = p => p ? p.reduce((x, y) => x + y, 0).toFixed(1) : null;
-  const ds = [{label: `Dzień roboczy (${sum(a.consumption_profile)} kWh)`, data: a.consumption_profile, backgroundColor: "#2f6fde"}];
-  if (a.weekend_profile) ds.push({label: `Weekend/święto (${sum(a.weekend_profile)} kWh)`, data: a.weekend_profile, backgroundColor: "#e08a1e"});
-  chart("profile-chart", {type: "bar", data: {labels: [...Array(24).keys()].map(h => h + ":00"), datasets: ds}});
+  const sum = p => p ? dec(p.reduce((x, y) => x + y, 0), 1) : null;
+  chart("profile-chart", () => {
+    const ds = [{label: `Dzień roboczy (${sum(a.consumption_profile)} kWh)`, data: a.consumption_profile, backgroundColor: css("--primary"), borderRadius: 2}];
+    if (a.weekend_profile) ds.push({label: `Weekend/święto (${sum(a.weekend_profile)} kWh)`, data: a.weekend_profile, backgroundColor: css("--pv"), borderRadius: 2});
+    return {type: "bar", data: {labels: [...Array(24).keys()].map(h => h + ":00"), datasets: ds}};
+  });
   return s.export?.min_price_pln_kwh ?? null;
 }
-
 async function loadForecast() {
   const f = await api("/api/solar-forecast?hours=48");
-  $("pv-days").innerHTML = f.days.map(d => kpi(d.energy_kWh.p50 + " kWh", `${new Date(d.date).toLocaleDateString("pl-PL", {weekday: "short", day: "2-digit", month: "2-digit"})} (p10 ${d.energy_kWh.p10} – p90 ${d.energy_kWh.p90}), szczyt ${d.peakPower_kW} kW`)).join("")
-    + kpi(f.remainingToday_kWh.p50 + " kWh", `jeszcze dziś (p10 ${f.remainingToday_kWh.p10} – p90 ${f.remainingToday_kWh.p90})`);
+  const range = e => `p10 ${dec(e.p10, 1)} – p90 ${dec(e.p90, 1)}`;
+  $("pv-days").innerHTML = kpi(dec(f.remainingToday_kWh.p50, 1) + " kWh", `jeszcze dziś · ${range(f.remainingToday_kWh)}`)
+    + f.days.map(d => kpi(dec(d.energy_kWh.p50, 1) + " kWh", `${new Date(d.date).toLocaleDateString("pl-PL", {weekday: "short", day: "2-digit", month: "2-digit"})} · ${range(d.energy_kWh)}`)).join("");
   const labels = f.hourly.map(h => fmtT(h.time));
-  chart("pv-chart", {type: "line", data: {labels, datasets: [
-    {label: "p90", data: f.hourly.map(h => h.power_kW.p90), borderColor: "transparent", backgroundColor: "rgba(240,180,30,.2)", fill: "+1", pointRadius: 0},
-    {label: "p50", data: f.hourly.map(h => h.power_kW.p50), borderColor: "#e0a100", pointRadius: 0, tension: .3},
-    {label: "p10", data: f.hourly.map(h => h.power_kW.p10), borderColor: "transparent", pointRadius: 0},
-  ]}, options: {scales: {y: {title: {display: true, text: "kW"}}}}});
-  $("pv-info").textContent = `Pobrano ${fmtT(f.fetchedAt)}${f.stale ? " — DANE STARE (błąd Solcast)" : ""}.`;
+  chart("pv-chart", () => ({type: "line", data: {labels, datasets: [
+    {label: "p90", data: f.hourly.map(h => h.power_kW.p90), borderColor: "transparent", backgroundColor: css("--pv-band"), fill: "+1", pointRadius: 0, tension: .3},
+    {label: "p50", data: f.hourly.map(h => h.power_kW.p50), borderColor: css("--pv"), borderWidth: 2.5, pointRadius: 0, tension: .3},
+    {label: "p10", data: f.hourly.map(h => h.power_kW.p10), borderColor: "transparent", pointRadius: 0, tension: .3},
+  ]}, options: {scales: {y: {title: {display: true, text: "kW"}}}}}));
+  $("pv-info").textContent = `Pobrano ${fmtT(f.fetchedAt)}${f.stale ? " — DANE STARE (błąd Solcast)" : ""} · pasmo = p10–p90.`;
 }
-
 async function loadPrices(minPrice) {
   const p = await api("/api/prices?hours=48");
   const labels = p.slots.map(s => fmtT(s.start));
-  const ds = [{label: "RCE", data: p.slots.map(s => s.price_PLN_kWh), borderColor: "#2f6fde", stepped: true, pointRadius: 0}];
-  if (minPrice != null) ds.push({label: "Min cena eksportu", data: p.slots.map(() => minPrice), borderColor: "#c0392b", borderDash: [6, 4], pointRadius: 0});
-  chart("price-chart", {type: "line", data: {labels, datasets: ds}});
-  $("price-info").textContent = p.slots.length ? `Min ${p.min}, max ${p.max} PLN/kWh. Ceny na jutro PSE publikuje po południu.` : "Brak cen.";
+  chart("price-chart", () => {
+    const ds = [{label: "RCE", data: p.slots.map(s => s.price_PLN_kWh), borderColor: css("--link"), borderWidth: 2, stepped: true, pointRadius: 0}];
+    if (minPrice != null) ds.push({label: "Min cena eksportu", data: p.slots.map(() => minPrice), borderColor: css("--bad"), borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0});
+    return {type: "line", data: {labels, datasets: ds}};
+  });
+  $("price-info").textContent = p.slots.length ? `Min ${dec(p.min)}, max ${dec(p.max)} PLN/kWh. Ceny na jutro PSE publikuje po południu.` : "Brak cen.";
 }
-
 async function loadLive() {
   $("battery").textContent = "Pobieranie…";
+  $("k-grid-sub").textContent = "Pobieranie…";
   await section("battery", async () => {
     const d = await api("/api/realtime-data", "POST");
-    const b = d.battery || {};
-    const w = v => v == null ? "—" : (v / 1000).toFixed(2) + " kW";
-    $("battery").innerHTML = `<div class="kpis">${kpi(b.soc_percent + "%", "SOC")}${kpi(w(b.chargeDischargePower_W), "ładowanie(+)/rozład.(−)")}${kpi(w(d.mppt?.totalPower_W), "PV teraz")}${kpi(w(d.meter1?.gridPower_W), "sieć (+eksport)")}</div>` +
-      rows([["Energia w baterii", b.remainingEnergy_kWh + " kWh"], ["Temperatura", b.temperature_C + " °C"], ["SOH", b.soh_percent + "%"],
-            ["Cykle", b.cycleTimes], ["Status", b.status?.description], ["Falownik", d.status?.description], ["Odczyt z", d.device?.dataTime],
-            ["PV dziś", d.energy?.dailyYield_kWh + " kWh"], ["Import / eksport dziś", `${d.meter1?.todayImportEnergy_kWh} / ${d.meter1?.todayExportEnergy_kWh} kWh`]]);
+    const b = d.battery || {}, m = d.meter1 || {};
+    const kw = v => v == null ? "—" : dec(v / 1000) + "<small> kW</small>";
+    const phases = d.ac?.phases || [];
+    // House = inverter AC output − grid (SolaX: + export, − import); same as automation.live_house_load_kw
+    const house = phases.length && m.gridPower_W != null && phases.every(p => p.power_W != null)
+      ? Math.max(0, phases.reduce((s, p) => s + p.power_W, 0) - m.gridPower_W) : null;
+    $("k-soc").innerHTML = b.soc_percent == null ? "—" : `${b.soc_percent}<small> %</small>`;
+    $("k-soc-bar").style.width = (b.soc_percent ?? 0) + "%";
+    $("k-pv").innerHTML = kw(d.mppt?.totalPower_W);
+    $("k-pv-sub").textContent = `dziś ${dec(d.energy?.dailyYield_kWh, 1)} kWh`;
+    $("k-bat").innerHTML = kw(b.chargeDischargePower_W);
+    $("k-bat-sub").textContent = `${dec(b.remainingEnergy_kWh, 1)} kWh w baterii`;
+    $("k-house").innerHTML = kw(house);
+    $("k-house-sub").textContent = `odczyt ${d.device?.dataTime ?? "—"}`;
+    $("k-grid").innerHTML = kw(m.gridPower_W);
+    $("k-grid-sub").textContent = `dziś import ${dec(m.todayImportEnergy_kWh, 1)} / eksport ${dec(m.todayExportEnergy_kWh, 1)} kWh`;
+    $("battery").innerHTML = rows([["Energia w baterii", dec(b.remainingEnergy_kWh, 1) + " kWh"], ["Temperatura", b.temperature_C + " °C"], ["SOH", b.soh_percent + " %"],
+      ["Cykle", b.cycleTimes], ["Status baterii", b.status?.description], ["Falownik", d.status?.description], ["Odczyt z", d.device?.dataTime]]);
   });
 }
-
 async function loadHistory() {
   const h = await api("/api/automation/history");
   if (!h.length) { $("history").textContent = "Brak decyzji. Ustaw DECISIONS_FILE, żeby historia przetrwała restart."; return; }
   const what = e => e.error ? `<span class="err">${esc(e.error)}</span>`
-    : e.kind === "charge" ? `Ładowanie z sieci do <b>${esc(e.targetSoc)}%</b> (${e.gridCharge ? "tak" : "nie"}), okno ${esc(e.window)}, potrzeba ${esc(e.needFromBattery_kWh)} kWh`
-    : `${esc(e.action)}${e.setpoint_W != null ? " " + (e.setpoint_W / 1000).toFixed(1) + " kW" : ""} do ${esc(e.stopSoc)}% SOC, SOC teraz ${esc(e.socPercent)}%, cena ${esc(e.price_PLN_kWh)}`;
-  const mode = e => e.dryRun ? badge(true) : e.kind === "charge" ? (e.applied ? '<span class="badge ok">WYSŁANO</span>' : "") : badge(false);
-  $("history").innerHTML = `<div class="scroll" style="max-height:360px"><table><tr><th>Kiedy</th><th>Co</th><th>Decyzja</th><th>Tryb</th></tr>` +
-    h.map(e => `<tr><td>${fmtT(e.time)}</td><td>${e.kind === "charge" ? "Ładowanie" : "Eksport"}</td><td>${what(e)}</td><td>${mode(e)}</td></tr>`).join("") + `</table></div>`;
+    : e.kind === "charge" ? `Ładowanie z sieci do <b>${esc(e.targetSoc)} %</b> (${e.gridCharge ? "tak" : "nie"}), okno ${esc(e.window)}, potrzeba ${esc(e.needFromBattery_kWh)} kWh`
+    : `${esc(e.action)}${e.setpoint_W != null ? " " + dec(e.setpoint_W / 1000, 1) + " kW" : ""} do ${esc(e.stopSoc)} % SOC, SOC teraz ${esc(e.socPercent)} %, cena ${esc(e.price_PLN_kWh)}`;
+  const mode = e => e.error ? '<span class="badge bad">BŁĄD</span>' : e.dryRun ? badge(true) : e.kind === "charge" ? (e.applied ? '<span class="badge ok">WYSŁANO</span>' : "") : badge(false);
+  $("history").innerHTML = `<div class="scroll" style="max-height:360px"><table><thead><tr><th>Kiedy</th><th>Co</th><th>Decyzja</th><th>Tryb</th></tr></thead><tbody>` +
+    h.map(e => `<tr><td class="n">${fmtT(e.time)}</td><td>${e.kind === "charge" ? "Ładowanie" : "Eksport"}</td><td>${what(e)}</td><td>${mode(e)}</td></tr>`).join("") + `</tbody></table></div>`;
 }
 
+const stamp = () => $("updated").textContent = "Aktualizacja " + new Date().toLocaleTimeString("pl-PL");
 async function loadAll() {
-  if (!key()) { document.querySelector("main").innerHTML = "<section>Brak klucza. Odśwież stronę.</section>"; return; }
+  if (!key()) {
+    // A form, not prompt(): embedded browsers (e.g. app panes) block prompt dialogs
+    document.querySelector("main").innerHTML = `<section class="panel" style="max-width:420px"><div class="body"><form id="key-form" class="body" style="padding:0">
+      <label for="key-input">HTTP_API_KEY</label><input id="key-input" type="password" autocomplete="off" required>
+      <button class="primary">Zapisz</button></form></div></section>`;
+    $("key-form").onsubmit = e => {
+      e.preventDefault();
+      try { localStorage.setItem("solaxKey", $("key-input").value); } catch {}
+      location.reload();
+    };
+    return;
+  }
   let minPrice = null;
   await Promise.all([
     section("charge", loadAutomation),
@@ -216,14 +420,13 @@ async function loadAll() {
     section("history", loadHistory),
   ]);
   await section("price-info", () => loadPrices(minPrice));
-  $("updated").textContent = "Aktualizacja " + new Date().toLocaleTimeString("pl-PL");
+  stamp();
 }
-
 $("reload").onclick = loadAll;
 $("live").onclick = loadLive;
-$("logout").onclick = () => { forgetKey(); loadAll(); };
+$("logout").onclick = () => { forgetKey(); location.reload(); };
 loadAll();
-setInterval(() => section("charge", loadAutomation).then(() => $("updated").textContent = "Aktualizacja " + new Date().toLocaleTimeString("pl-PL")), 60000);
+setInterval(() => section("charge", loadAutomation).then(stamp), 60000);
 </script>
 </body>
 </html>

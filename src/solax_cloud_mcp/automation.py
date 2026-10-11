@@ -423,6 +423,8 @@ class AutomationScheduler:
         self.export = export
         self.last_result: dict | None = None
         self.last_export: dict | None = None
+        # Latest shaped realtime data read by the export loop, so the dashboard needs no extra SolaX call
+        self.last_realtime: dict | None = None
         self.next_run: Trigger | None = None
         self._task: asyncio.Task | None = None
         self._export_task: asyncio.Task | None = None
@@ -483,6 +485,7 @@ class AutomationScheduler:
             raise RuntimeError("Export planner is not enabled")
         now = now or datetime.now(timezone.utc)
         realtime = await get_realtime_data_impl(None)
+        self.last_realtime = realtime
         battery = realtime.get("battery") or {}
         soc = battery.get("soc_percent")
         if soc is None:
@@ -638,7 +641,8 @@ class AutomationScheduler:
             "nextWindow": f"{self.next_run.window[0]:02d}:00-{self.next_run.window[1]:02d}:00" if self.next_run else None,
             "lastResult": self.last_result,
             "export": (
-                {"enabled": True, "dryRun": self.export.dry_run, "lastPlan": self.last_export}
+                {"enabled": True, "dryRun": self.export.dry_run, "lastPlan": self.last_export,
+                 "lastRealtime": self.last_realtime}
                 if self.export
                 else {"enabled": False}
             ),

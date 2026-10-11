@@ -376,8 +376,10 @@ async def test_export_plan_without_solcast_assumes_no_pv(monkeypatch):
     monkeypatch.setattr(automation, "get_solar_forecast", no_forecast)
     monkeypatch.setattr(automation, "get_realtime_data_impl", realtime)
     monkeypatch.setattr(automation, "get_rce_prices", prices)
-    plan = await AutomationScheduler(_settings(), EXPORT).export_plan(_local(2026, 10, 6, 18, 0))
+    scheduler = AutomationScheduler(_settings(), EXPORT)
+    plan = await scheduler.export_plan(_local(2026, 10, 6, 18, 0))
     assert plan["pvForecastAvailable"] is False
+    assert scheduler.status()["export"]["lastRealtime"] == {"battery": {"soc_percent": 90}}
     assert plan["reserveForHouse_kWh"] == 5.44  # 18-22: 4 h * 1 kWh / 0.9 + 1, no PV
 
 

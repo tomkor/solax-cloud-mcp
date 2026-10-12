@@ -214,6 +214,11 @@ def test_export_preview_disabled(api):
     assert api.post("/api/export/preview", headers=AUTH).status_code == 503
 
 
+def test_export_switch_disabled(api):
+    assert api.post("/api/export/active", json={"active": False}).status_code == 403
+    assert api.post("/api/export/active", json={"active": False}, headers=AUTH).status_code == 503
+
+
 def test_export_requires_automation(monkeypatch):
     monkeypatch.setenv("HTTP_API_KEY", API_KEY)
     monkeypatch.setenv("EXPORT_ENABLED", "1")

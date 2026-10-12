@@ -499,6 +499,8 @@ Authorization: Bearer YOUR_API_KEY
 
 `GET /api/dashboard/settings` (bearer token) returns the planner and export settings (no secrets), the next 6 charge-planner runs and the next export-loop tick, or `{"enabled": false}`.
 
+`POST /api/export/active` (bearer token, body `{"active": false}`) turns the export loop off or on; the dashboard's "Wyłącz/Włącz eksport" button calls it. Off also exits remote control at once. The switch is saved to `SETTINGS_FILE` (JSON) and survives restarts; the response `{"active": ..., "persisted": true|false}` says whether it was saved. Without `SETTINGS_FILE` export is on again after a restart. Returns 503 when `EXPORT_ENABLED` is not set.
+
 `GET /api/automation/history` (bearer token) returns the last 200 charge and export decisions, newest first. Idle export runs are not recorded. Set `DECISIONS_FILE` to keep them across restarts.
 
 ## Common Patterns

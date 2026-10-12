@@ -250,9 +250,9 @@ function key() {
   return k;
 }
 function forgetKey() { try { localStorage.removeItem("solaxKey"); } catch {} }
-async function api(path, method = "GET") {
+async function api(path, method = "GET", body = {}) {
   const headers = {Authorization: "Bearer " + key(), "Content-Type": "application/json"};
-  const r = await fetch(path, {method, headers, body: method === "POST" ? "{}" : undefined});
+  const r = await fetch(path, {method, headers, body: method === "POST" ? JSON.stringify(body) : undefined});
   if (r.status === 403) { forgetKey(); throw new Error("Zły klucz — odśwież stronę i podaj go ponownie"); }
   if (!r.ok) throw new Error(`${r.status} ${(await r.json().catch(() => ({}))).detail || r.statusText}`);
   return r.json();
@@ -276,7 +276,7 @@ async function loadAutomation() {
   const a = await api("/api/automation");
   const e = a.export;
   $("mode-badges").innerHTML = (a.enabled ? badge(a.dryRun, "Ładowanie: ") : '<span class="badge bad">Ładowanie: WYŁ.</span>')
-    + (e.enabled ? badge(e.dryRun, "Eksport: ") : '<span class="badge bad">Eksport: WYŁ.</span>');
+    + (e.enabled && e.active ? badge(e.dryRun, "Eksport: ") : '<span class="badge bad">Eksport: WYŁ.</span>');
   if (!a.enabled) { $("charge").textContent = "Automatyka wyłączona (AUTOMATION_ENABLED=0)."; $("export").textContent = "—"; return; }
   const r = a.lastResult;
   let h = `<div class="kpis">${kpi(fmtT(a.nextRun), "następne uruchomienie", true)}${kpi(a.nextWindow, "okno taniej taryfy", true)}</div>`;
@@ -296,8 +296,11 @@ async function loadAutomation() {
   if (!e.enabled) { $("export").textContent = "Eksport wyłączony (EXPORT_ENABLED=0)."; return; }
   if (e.lastRealtime) showLive(e.lastRealtime);
   const x = e.lastPlan;
-  let g = `<span class="small muted">Plan liczony co 15 min.</span>`;
-  if (!x) g += `<p class="muted">Brak planu.</p>`;
+  let g = `<div class="row"><button id="export-toggle" data-active="${e.active ? 1 : 0}" class="${e.active ? "" : "primary"}">${e.active ? "Wyłącz eksport" : "Włącz eksport"}</button>`
+    + (e.persisted ? "" : `<span class="small err">Brak SETTINGS_FILE: po restarcie eksport znów będzie włączony.</span>`) + `</div>`;
+  if (!e.active) { $("export").innerHTML = g + `<p class="muted">Eksport wyłączony w dashboardzie. Serwer nie wysyła poleceń eksportu do falownika.</p>`; return; }
+  g += `<span class="small muted">Plan liczony co 15 min.</span>`;
+  if (!x || x.paused) g += `<p class="muted">Brak planu.</p>`;
   else if (x.error) g += `<p class="err">${esc(x.error)}</p>`;
   else {
     const c = x.currentSlot;
@@ -407,9 +410,10 @@ async function loadHistory() {
   const h = await api("/api/automation/history");
   if (!h.length) { $("history").textContent = "Brak decyzji. Ustaw DECISIONS_FILE, żeby historia przetrwała restart."; return; }
   const what = e => e.error ? `<span class="err">${esc(e.error)}</span>`
+    : e.action === "enabled" || e.action === "disabled" ? `<b>${e.action === "enabled" ? "Włączono" : "Wyłączono"} eksport</b> w dashboardzie`
     : e.kind === "charge" ? `Ładowanie z sieci do <b>${esc(e.targetSoc)} %</b> (${e.gridCharge ? "tak" : "nie"}), okno ${esc(e.window)}, potrzeba ${esc(e.needFromBattery_kWh)} kWh`
     : `${esc(e.action)}${e.setpoint_W != null ? " " + dec(e.setpoint_W / 1000, 1) + " kW" : ""} do ${esc(e.stopSoc)} % SOC, SOC teraz ${esc(e.socPercent)} %, cena ${esc(e.price_PLN_kWh)}`;
-  const mode = e => e.error ? '<span class="badge bad">BŁĄD</span>' : e.dryRun ? badge(true) : e.kind === "charge" ? (e.applied ? '<span class="badge ok">WYSŁANO</span>' : "") : badge(false);
+  const mode = e => e.error ? '<span class="badge bad">BŁĄD</span>' : e.action === "enabled" || e.action === "disabled" ? "" : e.dryRun ? badge(true) : e.kind === "charge" ? (e.applied ? '<span class="badge ok">WYSŁANO</span>' : "") : badge(false);
   $("history").innerHTML = `<div class="scroll" style="max-height:360px"><table><thead><tr><th>Kiedy</th><th>Co</th><th>Decyzja</th><th>Tryb</th></tr></thead><tbody>` +
     h.map(e => `<tr><td class="n">${fmtT(e.time)}</td><td>${e.kind === "charge" ? "Ładowanie" : "Eksport"}</td><td>${what(e)}</td><td>${mode(e)}</td></tr>`).join("") + `</tbody></table></div>`;
 }
@@ -440,6 +444,18 @@ async function loadAll() {
 }
 $("reload").onclick = loadAll;
 $("live").onclick = loadLive;
+$("export").addEventListener("click", async ev => {
+  const b = ev.target.closest("#export-toggle");
+  if (!b) return;
+  b.disabled = true;
+  try {
+    await api("/api/export/active", "POST", {active: b.dataset.active !== "1"});
+    await Promise.all([section("charge", loadAutomation), section("history", loadHistory)]);
+  } catch (e) {
+    b.disabled = false;
+    b.insertAdjacentHTML("afterend", `<span class="small err">${esc(e.message)}</span>`);
+  }
+});
 $("logout").onclick = () => { forgetKey(); location.reload(); };
 loadAll();
 setInterval(() => section("charge", loadAutomation).then(stamp), 60000);

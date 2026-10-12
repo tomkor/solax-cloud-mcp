@@ -432,6 +432,9 @@ class AutomationScheduler:
         self._write_lock = asyncio.Lock()
         # Whether the inverter is in remote control (export); None = unknown, e.g. after a restart
         self._remote_control: bool | None = None
+        # Export on/off switch from the dashboard; EXPORT_ENABLED only decides whether the planner exists
+        self.export_active = self._load_settings().get("exportActive", True) is not False
+        self._export_wake = asyncio.Event()
         self.history: deque[dict] = deque(maxlen=HISTORY_SIZE)
         path = config.get_decisions_file()
         if path and os.path.exists(path):
@@ -442,6 +445,42 @@ class AutomationScheduler:
                         self.history.append(json.loads(line))
                     except ValueError:
                         pass
+
+    @staticmethod
+    def _load_settings() -> dict:
+        """Read SETTINGS_FILE. A missing or broken file must never stop the server: use defaults."""
+        path = config.get_settings_file()
+        if not path or not os.path.exists(path):
+            return {}
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            logger.exception("Cannot read settings from %s, using defaults", path)
+            return {}
+
+    async def set_export_active(self, active: bool) -> bool:
+        """Turn the export loop on or off and save it to SETTINGS_FILE.
+
+        Returns whether the setting was saved to a file. Raises OSError if the file cannot be
+        written; the switch is then not changed. Turning export off also leaves remote control now.
+        """
+        path = config.get_settings_file()
+        if path:
+            data = {**self._load_settings(), "exportActive": active}
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        self.export_active = active
+        self._record("export", {"action": "enabled" if active else "disabled"})
+        if not active and self.export and not self.export.dry_run and self._remote_control is not False:
+            async with self._write_lock:
+                await self._exit_remote_control(config.get_default_device_sn())
+        # Run the loop now, so the dashboard shows the new state without waiting for the next slot
+        self._export_wake.set()
+        return path is not None
 
     def _record(self, kind: str, entry: dict) -> None:
         """Keep a decision in memory and append it to DECISIONS_FILE. Never raises."""
@@ -512,8 +551,9 @@ class AutomationScheduler:
         device_sn = config.get_default_device_sn()
         slot = plan["currentSlot"]
         floor = plan["recommendedExportFloorSoc"]
-        export_now = slot["export"] and plan["socPercent"] > floor
+        # export_active is checked under the lock: a switch-off during planning must not discharge
         async with self._write_lock:
+            export_now = self.export_active and slot["export"] and plan["socPercent"] > floor
             if export_now:
                 # AC-port setpoint: planned export plus the house load measured now (profile if unknown)
                 house = plan.get("liveHouseLoad_kW")
@@ -549,6 +589,14 @@ class AutomationScheduler:
         # First run right away (a restart mid-slot must act on the current slot), then just after
         # each 15-minute slot boundary
         while True:
+            if not self.export_active:
+                # set_export_active already left remote control; retry here only if that failed
+                if not self.export.dry_run and self._remote_control is not False:
+                    async with self._write_lock:
+                        await self._exit_remote_control(config.get_default_device_sn())
+                self.last_export = {"paused": True}
+                await self._sleep_until_next_slot()
+                continue
             try:
                 plan = await self.export_plan()
                 if self.export.dry_run:
@@ -566,9 +614,17 @@ class AutomationScheduler:
                         await self._exit_remote_control(config.get_default_device_sn())
             self.last_export = result
             self._record_export(result)
-            now = datetime.now(timezone.utc)
-            next_slot = now.replace(second=0, microsecond=0) + timedelta(minutes=15 - now.minute % 15)
-            await asyncio.sleep((next_slot - now).total_seconds() + 5)
+            await self._sleep_until_next_slot()
+
+    async def _sleep_until_next_slot(self) -> None:
+        """Sleep until just after the next 15-minute slot boundary, or until the export switch changes."""
+        now = datetime.now(timezone.utc)
+        next_slot = now.replace(second=0, microsecond=0) + timedelta(minutes=15 - now.minute % 15)
+        self._export_wake.clear()
+        try:
+            await asyncio.wait_for(self._export_wake.wait(), (next_slot - now).total_seconds() + 5)
+        except asyncio.TimeoutError:
+            pass
 
     def _record_export(self, plan: dict) -> None:
         """Log export runs that did or would do something; idle 15-minute runs are skipped."""
@@ -641,7 +697,8 @@ class AutomationScheduler:
             "nextWindow": f"{self.next_run.window[0]:02d}:00-{self.next_run.window[1]:02d}:00" if self.next_run else None,
             "lastResult": self.last_result,
             "export": (
-                {"enabled": True, "dryRun": self.export.dry_run, "lastPlan": self.last_export,
+                {"enabled": True, "active": self.export_active, "persisted": config.get_settings_file() is not None,
+                 "dryRun": self.export.dry_run, "lastPlan": self.last_export,
                  "lastRealtime": self.last_realtime}
                 if self.export
                 else {"enabled": False}

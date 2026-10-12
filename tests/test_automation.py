@@ -397,3 +397,26 @@ def test_decision_history_persists_and_skips_idle_export(tmp_path, monkeypatch):
     path.write_text(path.read_text() + "not json\n")
     restored = _live_scheduler().history
     assert [e["kind"] for e in restored] == ["export", "export", "charge"]
+
+
+async def test_export_switch_persists_and_stops_discharge(tmp_path, monkeypatch, remote):
+    monkeypatch.setenv("SETTINGS_FILE", str(tmp_path / "settings.json"))
+    scheduler = _live_scheduler()
+    assert scheduler.export_active is True  # no file yet: EXPORT_ENABLED alone decides
+    await scheduler.apply_export(_plan(True))
+
+    assert await scheduler.set_export_active(False) is True
+    assert remote["commands"] == [("discharge", 5000, 40), ("exit",)]
+    # A plan computed before the switch-off must not discharge again
+    assert (await scheduler.apply_export(_plan(True)))["action"] == "none"
+    assert _live_scheduler().export_active is False  # survives a restart
+
+    await scheduler.set_export_active(True)
+    assert _live_scheduler().export_active is True
+
+
+def test_broken_settings_file_keeps_export_on(tmp_path, monkeypatch):
+    path = tmp_path / "settings.json"
+    path.write_text("not json")
+    monkeypatch.setenv("SETTINGS_FILE", str(path))
+    assert _live_scheduler().export_active is True

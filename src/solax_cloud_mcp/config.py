@@ -101,6 +101,11 @@ def get_decisions_file() -> str | None:
     return os.getenv("DECISIONS_FILE") or None
 
 
+def get_settings_file() -> str | None:
+    """Optional JSON file with settings changed from the dashboard (export on/off), kept across restarts."""
+    return os.getenv("SETTINGS_FILE") or None
+
+
 def get_solar_timezone() -> str:
     """IANA timezone used for forecast day boundaries and timestamps (default UTC)."""
     return os.getenv("SOLAR_TIMEZONE") or "UTC"

@@ -130,6 +130,9 @@ def create_app() -> FastAPI:
         minutes: int = Field(..., ge=1, le=EXPORT_TEST_MAX_MINUTES, description="Test duration (minutes)")
         stop_soc: int = Field(..., ge=EXPORT_TEST_MIN_STOP_SOC, le=100, description="Inverter stops discharging at this SOC (%)")
 
+    class ExportActiveRequest(BaseModel):
+        active: bool = Field(..., description="Whether the export loop may plan and send export commands")
+
     def to_http_error(e: ValueError) -> HTTPException:
         """Map impl errors: validation -> 400 with detail; upstream SolaX failure -> 502, details only in logs."""
         if isinstance(e.__cause__, SolaxApiError):
@@ -195,6 +198,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Upstream API request failed") from e
         except ValueError as e:
             raise to_http_error(e) from e
+
+    @app.post("/api/export/active", dependencies=[Depends(verify_api_key)])
+    async def set_export_active(req: ExportActiveRequest) -> dict:
+        """Turn the export loop on or off (saved to SETTINGS_FILE). Off also exits remote control now."""
+        if not scheduler or not scheduler.export:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Export planner is not enabled")
+        try:
+            persisted = await scheduler.set_export_active(req.active)
+        except OSError as e:
+            logger.error("Cannot save settings: %s", e)
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Cannot save SETTINGS_FILE") from e
+        logger.warning("Export loop turned %s from the dashboard", "on" if req.active else "off")
+        return {"active": req.active, "persisted": persisted}
 
     @app.get("/api/automation", dependencies=[Depends(verify_api_key)])
     async def get_automation_status() -> dict:

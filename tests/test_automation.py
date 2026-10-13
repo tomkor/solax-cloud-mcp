@@ -135,8 +135,6 @@ def test_next_trigger_order_and_lead():
 
 @pytest.fixture
 def fake_io(monkeypatch):
-    writes = []
-
     async def fake_forecast(hours):
         return {
             "fetchedAt": "2026-10-06T21:00:00+02:00",
@@ -144,35 +142,14 @@ def fake_io(monkeypatch):
             "hourly": [{"time": "2026-10-07T06:00+02:00", "power_kW": {"p10": 0.0, "p50": 0.5, "p90": 1.0}}],
         }
 
-    async def fake_set(**kwargs):
-        writes.append(kwargs)
-        return {"code": 10000}
-
     monkeypatch.setattr(automation, "get_solar_forecast", fake_forecast)
-    monkeypatch.setattr(automation, "set_battery_self_use_mode_impl", fake_set)
-    return writes
 
 
-async def test_run_applies_plan_to_inverter(fake_io):
-    scheduler = AutomationScheduler(_settings(dry_run=False))
-    result = await scheduler.run(_trigger(_local(2026, 10, 6, 22), (22, 6)), apply=True)
-    assert result["applied"] is True
+async def test_run_plans_window_with_forecast(fake_io):
+    result = await AutomationScheduler(_settings(dry_run=False)).run(_trigger(_local(2026, 10, 6, 22), (22, 6)))
     assert result["peakSegment"]["pvForecast_kWh"] == 0.5
-    assert fake_io == [
-        {
-            "min_soc": 15,
-            "charge_upper_soc": result["targetSoc"],
-            "charge_from_grid_enable": 1,
-            "charge_start_time_period1": "22:00",
-            "charge_end_time_period1": "06:00",
-        }
-    ]
-
-
-async def test_preview_never_writes(fake_io):
-    result = await AutomationScheduler(_settings(dry_run=False)).preview()
-    assert result["applied"] is False
-    assert fake_io == []
+    assert result["windowEnd"] == "2026-10-07T06:00+02:00"
+    assert result["gridCharge"] is True
 
 
 def test_weekend_and_holiday_profile():
@@ -206,6 +183,7 @@ def test_settings_from_env(monkeypatch):
     assert s.weekend_profile is None
     monkeypatch.setenv("AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH", "19.2")
     assert Settings.from_env().weekend_profile == pytest.approx((0.8,) * 24)
+    assert s.charge_power_kw == 5.0
 
 
 @pytest.mark.parametrize(
@@ -216,6 +194,7 @@ def test_settings_from_env(monkeypatch):
         {"BATTERY_CAPACITY_KWH": "21.2", "AUTOMATION_DAILY_CONSUMPTION_KWH": "12", "TARIFF_OFFPEAK_WINDOWS": "22:30-06:00"},
         {"BATTERY_CAPACITY_KWH": "21.2", "AUTOMATION_CONSUMPTION_PROFILE": "1,2,3"},
         {"BATTERY_CAPACITY_KWH": "21.2", "AUTOMATION_DAILY_CONSUMPTION_KWH": "12", "AUTOMATION_MIN_SOC": "5"},
+        {"BATTERY_CAPACITY_KWH": "21.2", "AUTOMATION_DAILY_CONSUMPTION_KWH": "12", "AUTOMATION_CHARGE_POWER_KW": "0"},
     ],
 )
 def test_settings_from_env_rejects_invalid(monkeypatch, env):
@@ -292,10 +271,65 @@ def remote(monkeypatch):
     async def fake_exit(device_sn):
         calls["commands"].append(("exit",))
 
+    async def fake_charge(device_sn, charge_w, stop_soc):
+        calls["commands"].append(("charge", charge_w, stop_soc))
+        if calls["fail"]:
+            raise automation.SolaxApiError("boom")
+
     monkeypatch.setenv("SOLAX_DEVICE_SN", "SN1")
     monkeypatch.setattr(automation, "discharge_to_soc", fake_discharge)
+    monkeypatch.setattr(automation, "charge_to_soc", fake_charge)
     monkeypatch.setattr(automation, "exit_vpp_mode", fake_exit)
     return calls
+
+
+def _charge_plan(seconds: float, target=40) -> dict:
+    now = datetime.now(timezone.utc)
+    return {"windowStart": (now - timedelta(seconds=1)).isoformat(), "windowEnd": (now + timedelta(seconds=seconds)).isoformat(), "targetSoc": target}
+
+
+@pytest.fixture
+def soc_readings(monkeypatch):
+    """Battery SOC returned by successive realtime reads; the last value repeats."""
+    readings = []
+
+    async def realtime(device_sn):
+        return {"battery": {"soc_percent": readings.pop(0) if len(readings) > 1 else readings[0]}}
+
+    monkeypatch.setattr(automation, "get_realtime_data_impl", realtime)
+    monkeypatch.setattr(automation, "CHARGE_CHECK_SECONDS", 0.02)
+    return readings
+
+
+async def test_charge_window_charges_below_target_then_exits(remote, soc_readings):
+    soc_readings += [30, 45]
+    scheduler = AutomationScheduler(_settings(dry_run=False, charge_power_kw=5.0))
+    await scheduler.charge_window(_charge_plan(0.1))
+    assert remote["commands"] == [("charge", 5000, 40), ("exit",)]
+    assert scheduler._charging is False
+    assert scheduler.history[-1]["action"] == "grid charge"
+
+
+async def test_charge_window_resends_when_soc_drops(remote, soc_readings):
+    soc_readings += [41, 38, 41]
+    await AutomationScheduler(_settings(dry_run=False)).charge_window(_charge_plan(0.1))
+    assert remote["commands"] == [("charge", 5000, 40), ("exit",)]
+
+
+async def test_failed_charge_still_exits_at_window_end(remote, soc_readings):
+    soc_readings.append(20)
+    remote["fail"] = True
+    scheduler = AutomationScheduler(_settings(dry_run=False))
+    await scheduler.charge_window(_charge_plan(0.05))
+    assert remote["commands"][-1] == ("exit",)
+    assert "error" in scheduler.history[-1]
+
+
+async def test_export_keeps_off_inverter_while_charging(remote):
+    scheduler = _live_scheduler()
+    scheduler._charging = True
+    assert await scheduler.apply_export(_plan(True)) == {"action": "none"}
+    assert remote["commands"] == []
 
 
 def _live_scheduler(max_power_kw=5.0):

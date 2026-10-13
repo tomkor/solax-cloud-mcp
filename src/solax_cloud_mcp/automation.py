@@ -2,8 +2,11 @@
 
 Before each daily off-peak window (e.g. 22:00-06:00 and 13:00-15:00) the planner looks at the
 peak-price hours that directly follow it, estimates how much energy the house will need from the
-battery there (consumption profile minus Solcast PV forecast) and sets Self Use Mode so the
-battery is charged from the grid during the cheap window only up to that level.
+battery there (consumption profile minus Solcast PV forecast) and charges the battery from the
+grid during the cheap window only up to that level.
+
+Charging uses remote control (charge to target SOC) during the window; the X3-NEO-LV ignores the
+Self Use grid-charge settings.
 """
 
 import asyncio
@@ -17,14 +20,16 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from . import config
-from .client import SolaxApiError, discharge_to_soc, exit_vpp_mode
+from .client import SolaxApiError, charge_to_soc, discharge_to_soc, exit_vpp_mode
 from .forecast import SolcastError, get_solar_forecast
 from .prices import PriceSlot, get_rce_prices
-from .server import get_realtime_data_impl, set_battery_self_use_mode_impl
+from .server import get_realtime_data_impl
 
 logger = logging.getLogger(__name__)
 
 MAX_SEGMENT_HOURS = 24
+# How often SOC is checked during a charge window (re-sends the charge command while below target)
+CHARGE_CHECK_SECONDS = 15 * 60
 # Decisions kept in memory and returned by the history endpoint
 HISTORY_SIZE = 200
 
@@ -123,6 +128,7 @@ class Settings:
     dry_run: bool
     # Used on weekends and Polish public holidays; falls back to consumption_profile
     weekend_profile: tuple[float, ...] | None = None
+    charge_power_kw: float = 5.0
 
     def load_kwh(self, local_hour: datetime) -> float:
         """Expected house consumption (kWh) in the local hour starting at `local_hour`."""
@@ -173,6 +179,10 @@ class Settings:
         if not (0.5 <= efficiency <= 1.0):
             raise RuntimeError("AUTOMATION_EFFICIENCY must be between 0.5 and 1.0")
 
+        charge_power_kw = float(env("AUTOMATION_CHARGE_POWER_KW", "5"))
+        if not (0 < charge_power_kw <= 15):
+            raise RuntimeError("AUTOMATION_CHARGE_POWER_KW must be between 0 and 15")
+
         return cls(
             tz=ZoneInfo(config.get_solar_timezone()),
             tariff=Tariff(
@@ -195,6 +205,7 @@ class Settings:
             # Safe default: log decisions only, never write to the inverter unless explicitly disabled
             dry_run=env("AUTOMATION_DRY_RUN", "1") != "0",
             weekend_profile=weekend_profile,
+            charge_power_kw=charge_power_kw,
         )
 
 
@@ -432,6 +443,8 @@ class AutomationScheduler:
         self._write_lock = asyncio.Lock()
         # Whether the inverter is in remote control (export); None = unknown, e.g. after a restart
         self._remote_control: bool | None = None
+        # True during an off-peak window with grid charging; the export loop then keeps off the inverter
+        self._charging = False
         # Export on/off switch from the dashboard; EXPORT_ENABLED only decides whether the planner exists
         self.export_active = self._load_settings().get("exportActive", True) is not False
         self._export_wake = asyncio.Event()
@@ -496,27 +509,46 @@ class AutomationScheduler:
         except OSError:
             logger.exception("Cannot write decision history to %s", path)
 
-    async def run(self, trigger: Trigger, apply: bool) -> dict:
-        """Compute a plan for `trigger` and optionally write it to the inverter."""
+    async def run(self, trigger: Trigger) -> dict:
+        """Compute the grid-charge plan for `trigger` (never writes; charge_window executes it)."""
         forecast = await get_solar_forecast(hours=48)
         plan = compute_plan(self.settings, trigger, _pv_by_hour(forecast, self.settings.percentile))
         plan["forecastFetchedAt"] = forecast["fetchedAt"]
         plan["forecastStale"] = forecast["stale"]
         plan["dryRun"] = self.settings.dry_run
-        plan["applied"] = False
-
-        if apply:
-            s, e = trigger.window
-            async with self._write_lock:
-                await set_battery_self_use_mode_impl(
-                    min_soc=plan["minSoc"],
-                    charge_upper_soc=plan["targetSoc"],
-                    charge_from_grid_enable=int(plan["gridCharge"]),
-                    charge_start_time_period1=f"{s:02d}:00",
-                    charge_end_time_period1=f"{e:02d}:00",
-                )
-            plan["applied"] = True
         return plan
+
+    async def charge_window(self, plan: dict) -> None:
+        """From window start to window end: charge from the grid whenever SOC is below the target.
+
+        The inverter stops by itself at the target SOC. The command is re-sent every
+        CHARGE_CHECK_SECONDS while SOC is below target (house load may pull it back down), and
+        remote control is always left at the window end, also on errors and on server stop.
+        """
+        start = datetime.fromisoformat(plan["windowStart"])
+        end = datetime.fromisoformat(plan["windowEnd"])
+        target = plan["targetSoc"]
+        watts = round(self.settings.charge_power_kw * 1000)
+        device_sn = config.get_default_device_sn()
+        await asyncio.sleep(max(0.0, (start - datetime.now(timezone.utc)).total_seconds()))
+        self._charging = True
+        try:
+            while (left := (end - datetime.now(timezone.utc)).total_seconds()) > 0:
+                try:
+                    soc = (await get_realtime_data_impl(None)).get("battery", {}).get("soc_percent")
+                    if soc is not None and soc < target:
+                        async with self._write_lock:
+                            await charge_to_soc(device_sn, watts, target)
+                        logger.warning("Grid charge: %d W until %d%% SOC (SOC now %s%%)", watts, target, soc)
+                        self._record("charge", {"action": "grid charge", "setpoint_W": watts, "stopSoc": target, "socPercent": soc})
+                except Exception as e:  # retry at the next check; never leave the window early
+                    logger.exception("Grid charge command failed")
+                    self._record("charge", {"error": f"{type(e).__name__} (details in server logs)"})
+                await asyncio.sleep(min(CHARGE_CHECK_SECONDS, left))
+        finally:
+            async with self._write_lock:
+                await self._exit_remote_control(device_sn)
+            self._charging = False
 
     async def export_plan(self, now: datetime | None = None) -> dict:
         """Compute the export plan from current SOC, PV forecast and RCE prices (never writes)."""
@@ -553,6 +585,8 @@ class AutomationScheduler:
         floor = plan["recommendedExportFloorSoc"]
         # export_active is checked under the lock: a switch-off during planning must not discharge
         async with self._write_lock:
+            if self._charging:
+                return {"action": "none"}
             export_now = self.export_active and slot["export"] and plan["socPercent"] > floor
             if export_now:
                 # AC-port setpoint: planned export plus the house load measured now (profile if unknown)
@@ -591,7 +625,7 @@ class AutomationScheduler:
         while True:
             if not self.export_active:
                 # set_export_active already left remote control; retry here only if that failed
-                if not self.export.dry_run and self._remote_control is not False:
+                if not self.export.dry_run and self._remote_control is not False and not self._charging:
                     async with self._write_lock:
                         await self._exit_remote_control(config.get_default_device_sn())
                 self.last_export = {"paused": True}
@@ -609,7 +643,7 @@ class AutomationScheduler:
                 logger.exception("Export planner run failed")
                 result = {"error": f"{type(e).__name__} (details in server logs)"}
                 # Without a fresh plan, do not keep discharging
-                if not self.export.dry_run and self._remote_control is not False:
+                if not self.export.dry_run and self._remote_control is not False and not self._charging:
                     async with self._write_lock:
                         await self._exit_remote_control(config.get_default_device_sn())
             self.last_export = result
@@ -646,10 +680,15 @@ class AutomationScheduler:
 
     async def preview(self) -> dict:
         trigger = next_trigger(self.settings, datetime.now(timezone.utc))
-        return await self.run(trigger, apply=False)
+        return await self.run(trigger)
 
     async def _loop(self) -> None:
         after = datetime.now(timezone.utc)
+        # shortcut: a restart inside an off-peak window skips that window's charging; handle the current window if it matters
+        if not self.settings.dry_run:
+            # State unknown after a restart (e.g. a crash mid-charge): back to normal Self Use
+            async with self._write_lock:
+                await self._exit_remote_control(config.get_default_device_sn())
         while True:
             trigger = next_trigger(self.settings, after)
             self.next_run = trigger
@@ -657,7 +696,7 @@ class AutomationScheduler:
             await asyncio.sleep(max(0.0, delay))
             after = trigger.run_at
             try:
-                result = await self.run(trigger, apply=not self.settings.dry_run)
+                result = await self.run(trigger)
                 logger.info("Battery plan: %s", result)
             except Exception as e:  # never let one failed run stop the scheduler
                 # Keep the inverter's previous settings when the forecast or SolaX call fails
@@ -665,12 +704,13 @@ class AutomationScheduler:
                 result = {
                     "runAt": trigger.run_at.isoformat(timespec="minutes"),
                     "error": f"{type(e).__name__} (details in server logs)",
-                    "applied": False,
                 }
             self.last_result = result
             self._record("charge", {k: result.get(k) for k in (
-                "runAt", "window", "targetSoc", "gridCharge", "needFromBattery_kWh", "dryRun", "applied", "error",
+                "runAt", "window", "targetSoc", "gridCharge", "needFromBattery_kWh", "dryRun", "error",
             ) if k in result})
+            if result.get("gridCharge") and not self.settings.dry_run:
+                await self.charge_window(result)
 
     def start(self) -> None:
         self._task = asyncio.create_task(self._loop())
@@ -696,6 +736,7 @@ class AutomationScheduler:
             "nextRun": self.next_run.run_at.isoformat(timespec="minutes") if self.next_run else None,
             "nextWindow": f"{self.next_run.window[0]:02d}:00-{self.next_run.window[1]:02d}:00" if self.next_run else None,
             "lastResult": self.last_result,
+            "charging": self._charging,
             "export": (
                 {"enabled": True, "active": self.export_active, "persisted": config.get_settings_file() is not None,
                  "dryRun": self.export.dry_run, "lastPlan": self.last_export,

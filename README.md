@@ -217,13 +217,13 @@ Built into the HTTP server and disabled by default. Designed for time-of-use tar
 1. Takes the peak-price hours right after the window, e.g. 06:00-13:00 after the night window and 15:00-22:00 after the midday one. When the window is followed by more off-peak time (Friday night, holidays), there is nothing to cover and grid charging is disabled.
 2. For each of those hours, compares the consumption profile with the Solcast PV forecast (`AUTOMATION_FORECAST_PERCENTILE`). The largest cumulative deficit is the energy the battery must hold at the start of the peak, so PV surplus earlier in the segment offsets later deficits.
 3. Converts that energy to a target SOC: `min_soc + (deficit / efficiency + margin) / capacity`, capped at `AUTOMATION_MAX_GRID_SOC`.
-4. Calls Self Use Mode with `minSoc=AUTOMATION_MIN_SOC`, `chargeUpperSoc=target`, grid charging on only when target > reserve, and the charge period set to the off-peak window.
+4. During the window, when grid charging is needed: every 15 minutes, if SOC is below the target, sends remote control "charge at `AUTOMATION_CHARGE_POWER_KW` (default 5) until target SOC". The inverter stops by itself at the target. At the window end (and on server stop or restart) it exits remote control, back to normal Self Use. The export loop does not touch the inverter during the window.
 
-If the forecast or the SolaX call fails, the inverter keeps its previous settings and the error is logged.
+The X3-NEO-LV accepts the Self Use grid-charge settings (`chargeFromGridEnable`, `chargeUpperSoc`) but does not act on them, so the planner does not use them.
+
+If the forecast fails, nothing is charged in that window and the error is logged. A failed charge command is retried at the next 15-minute check. A restart inside a window skips charging in that window.
 
 **Safety:** `AUTOMATION_DRY_RUN=1` (default) only logs decisions. Watch `GET /api/automation` and the logs for a few days, check that the decisions match how your inverter behaves, then set `AUTOMATION_DRY_RUN=0`.
-
-> Verify on your inverter that `chargeUpperSoc` ("Charge battery to") limits only **grid** charging during the charge period and does not cap PV charging. The planner relies on this.
 
 **Endpoints** (bearer auth):
 - `GET /api/automation`: enabled/dry-run status, next run, last result.

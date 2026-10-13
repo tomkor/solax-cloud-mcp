@@ -284,7 +284,7 @@ async function loadAutomation() {
   else if (r.error) h += `<p class="err">Ostatni przebieg (${fmtT(r.runAt)}): ${esc(r.error)}</p>`;
   else {
     h += `<span class="small muted">Ostatnia decyzja (${fmtT(r.runAt)}, okno ${esc(r.window)}):</span>`;
-    h += `<div class="kpis">${kpi(r.targetSoc + " %", "docelowy SOC")}${kpi(r.gridCharge ? "TAK" : "NIE", "ładuj z sieci")}${kpi(dec(r.needFromBattery_kWh, 1) + " kWh", "potrzeba z baterii")}${kpi(r.applied ? "wysłano" : "nie wysłano", "wynik")}</div>`;
+    h += `<div class="kpis">${kpi(r.targetSoc + " %", "docelowy SOC")}${kpi(r.gridCharge ? "TAK" : "NIE", "ładuj z sieci")}${kpi(dec(r.needFromBattery_kWh, 1) + " kWh", "potrzeba z baterii")}${kpi(a.charging ? "TAK" : "NIE", "ładuje teraz")}</div>`;
     const p = r.peakSegment || {};
     h += rows([["Drogi okres", p.start ? `${fmtT(p.start)} – ${hhmm(p.end)} (${p.hours} h)` : "—"],
                ["Prognoza PV w tym czasie", dec(p.pvForecast_kWh, 1) + " kWh (" + r.percentile + ")"],
@@ -411,9 +411,9 @@ async function loadHistory() {
   if (!h.length) { $("history").textContent = "Brak decyzji. Ustaw DECISIONS_FILE, żeby historia przetrwała restart."; return; }
   const what = e => e.error ? `<span class="err">${esc(e.error)}</span>`
     : e.action === "enabled" || e.action === "disabled" ? `<b>${e.action === "enabled" ? "Włączono" : "Wyłączono"} eksport</b> w dashboardzie`
-    : e.kind === "charge" ? `Ładowanie z sieci do <b>${esc(e.targetSoc)} %</b> (${e.gridCharge ? "tak" : "nie"}), okno ${esc(e.window)}, potrzeba ${esc(e.needFromBattery_kWh)} kWh`
-    : `${esc(e.action)}${e.setpoint_W != null ? " " + dec(e.setpoint_W / 1000, 1) + " kW" : ""} do ${esc(e.stopSoc)} % SOC, SOC teraz ${esc(e.socPercent)} %, cena ${esc(e.price_PLN_kWh)}`;
-  const mode = e => e.error ? '<span class="badge bad">BŁĄD</span>' : e.action === "enabled" || e.action === "disabled" ? "" : e.dryRun ? badge(true) : e.kind === "charge" ? (e.applied ? '<span class="badge ok">WYSŁANO</span>' : "") : badge(false);
+    : e.kind === "charge" && !e.action ? `Ładowanie z sieci do <b>${esc(e.targetSoc)} %</b> (${e.gridCharge ? "tak" : "nie"}), okno ${esc(e.window)}, potrzeba ${esc(e.needFromBattery_kWh)} kWh`
+    : `${esc(e.action)}${e.setpoint_W != null ? " " + dec(e.setpoint_W / 1000, 1) + " kW" : ""} do ${esc(e.stopSoc)} % SOC, SOC teraz ${esc(e.socPercent)} %${e.price_PLN_kWh != null ? ", cena " + esc(e.price_PLN_kWh) : ""}`;
+  const mode = e => e.error ? '<span class="badge bad">BŁĄD</span>' : e.action === "enabled" || e.action === "disabled" ? "" : e.dryRun ? badge(true) : e.kind === "charge" && !e.action ? (e.applied ? '<span class="badge ok">WYSŁANO</span>' : "") : badge(false);
   $("history").innerHTML = `<div class="scroll" style="max-height:360px"><table><thead><tr><th>Kiedy</th><th>Co</th><th>Decyzja</th><th>Tryb</th></tr></thead><tbody>` +
     h.map(e => `<tr><td class="n">${fmtT(e.time)}</td><td>${e.kind === "charge" ? "Ładowanie" : "Eksport"}</td><td>${what(e)}</td><td>${mode(e)}</td></tr>`).join("") + `</tbody></table></div>`;
 }

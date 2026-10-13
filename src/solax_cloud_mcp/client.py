@@ -393,6 +393,21 @@ async def discharge_to_soc(device_sn: str, discharge_w: int, stop_soc: int) -> d
     return _check_delivered(await _post_command(SOC_TARGET_URL, body), device_sn)
 
 
+async def charge_to_soc(device_sn: str, charge_w: int, stop_soc: int) -> dict:
+    """Remote control: charge at charge_w (W, inverter AC port, from grid and PV) until the battery reaches stop_soc (%).
+
+    Self Use grid-charge settings (chargeFromGridEnable, chargeUpperSoc) are accepted but ignored by
+    the X3-NEO-LV; this mode is what actually charges from the grid (verified on hardware 2026-10-13).
+    """
+    body = {
+        "snList": [device_sn],
+        "targetSoc": stop_soc,
+        "chargeDischargPower": charge_w,  # API: positive = charge
+        "businessType": BUSINESS_TYPE_RESIDENTIAL,
+    }
+    return _check_delivered(await _post_command(SOC_TARGET_URL, body), device_sn)
+
+
 async def exit_vpp_mode(device_sn: str) -> dict:
     """Exit remote control: the inverter returns to its normal work mode (e.g. Self Use)."""
     body = {"snList": [device_sn], "businessType": BUSINESS_TYPE_RESIDENTIAL}

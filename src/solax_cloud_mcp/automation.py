@@ -349,7 +349,7 @@ def compute_export_plan(
 
     candidates = [
         s for s in prices
-        if s.end > now and s.start < horizon and s.price_pln_kwh * export.price_multiplier >= export.min_price_pln_kwh
+        if s.end > now and s.start < horizon and s.price_pln_kwh >= export.min_price_pln_kwh
     ]
     def slot_load(slot: PriceSlot) -> float:
         return settings.load_kwh(slot.start.astimezone(settings.tz)) * 0.25

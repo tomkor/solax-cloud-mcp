@@ -312,7 +312,7 @@ async function loadAutomation() {
         x.slots.map(s => `<tr><td class="n">${fmtT(s.start)}</td><td class="n">${hhmm(s.end)}</td><td class="n">${dec(s.price_PLN_kWh)}</td><td class="n">${dec(s.export_kWh)} kWh</td><td class="n">${dec(s.dischargeSetpoint_kW, 1)} kW</td><td class="n">${dec(s.revenue_PLN)}</td></tr>`).join("") + `</tbody></table></div>`;
     } else g += `<p class="muted">Brak slotów do sprzedaży.</p>`;
     g += rows([["Rezerwa dla domu", dec(x.reserveForHouse_kWh, 1) + " kWh do " + fmtT(x.horizonEnd)],
-               ["Min SOC przy eksporcie", x.recommendedExportFloorSoc + " %"], ["Min cena", dec(x.minPrice_PLN_kWh) + " PLN/kWh"],
+               ["Min SOC przy eksporcie", x.recommendedExportFloorSoc + " %"], ["Min cena RCE netto", dec(x.minPrice_PLN_kWh) + " PLN/kWh"],
                ["Obciążenie domu teraz", x.liveHouseLoad_kW == null ? "—" : dec(x.liveHouseLoad_kW) + " kW"],
                ["Prognoza PV dostępna", x.pvForecastAvailable ? "tak" : "NIE (liczone jako 0)"], ["Policzono", fmtT(x.now)]]);
   }
@@ -334,7 +334,7 @@ async function loadSettings() {
     ["Weekendy tanie", t.weekends ? "tak" : "nie"], ["Święta tanie", t.holidays ? "tak" : "nie"]]);
   if (s.export) {
     const x = s.export;
-    st += `<span class="small muted">Eksport</span>` + rows([["Min cena", dec(x.min_price_pln_kwh) + " PLN/kWh"], ["Max moc", dec(x.max_power_kw, 1) + " kW"],
+    st += `<span class="small muted">Eksport</span>` + rows([["Min cena RCE netto", dec(x.min_price_pln_kwh) + " PLN/kWh"], ["Max moc", dec(x.max_power_kw, 1) + " kW"],
       ["Min energia w slocie", dec(x.min_slot_kwh) + " kWh"], ["Mnożnik ceny", x.price_multiplier], ["Tryb", x.dry_run ? "DRY RUN" : "na żywo"]]);
   }
   $("settings").innerHTML = st;

@@ -243,6 +243,15 @@ def test_export_current_slot_and_threshold():
     assert len(plan["slots"]) == 1  # 0.99 below threshold
 
 
+def test_export_threshold_uses_net_price():
+    # 0.9 * 1.23 = 1.107 >= 1.0, but the threshold compares the net RCE price
+    export = ExportSettings(min_price_pln_kwh=1.0, max_power_kw=8.0, min_slot_kwh=0.2, price_multiplier=1.23, dry_run=True)
+    now = _local(2026, 10, 6, 18, 5)
+    plan = compute_export_plan(_settings(), export, now, 100, {}, [_slot(18, 0, 1.1), _slot(18, 15, 0.9)])
+    assert [s["start"][11:16] for s in plan["slots"]] == ["18:00"]
+    assert plan["slots"][0]["price_PLN_kWh"] == 1.35  # deposit value shown after the multiplier
+
+
 def test_no_export_when_battery_needed_for_house():
     now = _local(2026, 10, 6, 15, 0)
     plan = compute_export_plan(_settings(), EXPORT, now, 30, {}, [_slot(18, 0, 3.0)])

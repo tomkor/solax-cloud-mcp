@@ -222,6 +222,7 @@ services:
 | `AUTOMATION_ENABLED` | Run forecast-driven battery planner in the HTTP server | `1` |
 | `AUTOMATION_DRY_RUN` | Log decisions only, do not write to inverter (default `1`) | `0` |
 | `BATTERY_CAPACITY_KWH` | Usable battery capacity | `21.2` |
+| `AUTOMATION_CHARGE_POWER_KW` | Grid charge power in off-peak windows (default `5`) | `5` |
 | `AUTOMATION_DAILY_CONSUMPTION_KWH` | Daily consumption (flat hourly profile) | `12` |
 | `TARIFF_OFFPEAK_WINDOWS` | Daily off-peak windows (full hours) | `22:00-06:00,13:00-15:00` |
 | `SOLAX_ALLOW_WRITE` | MCP mode: expose `set_battery_self_use_mode` tool to the LLM (default off) | `1` |

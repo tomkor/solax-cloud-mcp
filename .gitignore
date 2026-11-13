@@ -15,3 +15,8 @@ context/
 *.swp
 *.swo
 *~
+
+# .NET build output
+bin/
+obj/
+publish/

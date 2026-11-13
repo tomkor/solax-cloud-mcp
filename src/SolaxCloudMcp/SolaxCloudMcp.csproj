@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Numbers in .env use "." on every machine; time zones do not need ICU -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Version>0.1.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.4.0" />
+    <PackageReference Include="Syncfusion.Blazor.Buttons" Version="35.1.46" />
+    <PackageReference Include="Syncfusion.Blazor.Charts" Version="35.1.46" />
+    <PackageReference Include="Syncfusion.Blazor.Grid" Version="35.1.46" />
+    <PackageReference Include="Syncfusion.Blazor.Inputs" Version="35.1.46" />
+    <PackageReference Include="Syncfusion.Blazor.Layouts" Version="35.1.46" />
+    <PackageReference Include="Syncfusion.Blazor.Themes" Version="35.1.46" />
+  </ItemGroup>
+
+  <!-- The Themes package ships every Syncfusion theme (290 MB). The dashboard uses fluent2 and fluent2-dark only. -->
+  <Target Name="RemoveUnusedSyncfusionThemes" AfterTargets="Publish">
+    <ItemGroup>
+      <UnusedTheme Include="$(PublishDir)wwwroot/_content/Syncfusion.Blazor.Themes/**"
+                   Exclude="$(PublishDir)wwwroot/_content/Syncfusion.Blazor.Themes/fluent2.css*;$(PublishDir)wwwroot/_content/Syncfusion.Blazor.Themes/fluent2-dark.css*" />
+    </ItemGroup>
+    <Delete Files="@(UnusedTheme)" />
+  </Target>
+
+</Project>

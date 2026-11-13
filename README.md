@@ -20,7 +20,7 @@ Both planners send SolaX remote control commands and run in **dry run** by defau
 
 ## Prerequisites
 
-- **Python 3.10+** (automatically provisioned by `uv`)
+- **.NET 10 SDK** to build and run ([download](https://dotnet.microsoft.com/download))
 - **uv** package manager ([install here](https://astral.sh/uv/))
 - A SolaX Developer Platform account with OAuth2 application registered
 - Device (inverter) serial number (`deviceSn`) for your inverter
@@ -47,11 +47,8 @@ Both planners send SolaX remote control commands and run in **dry run** by defau
 # Clone or navigate to the repo
 cd /path/to/solax-cloud-mcp
 
-# Install uv if needed
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install dependencies and create virtual environment
-uv sync
+# Build (needs the .NET 10 SDK)
+dotnet build -c Release
 ```
 
 ### 4. Configure Credentials
@@ -81,7 +78,7 @@ claude mcp add solax-cloud \
   --env SOLAX_CLIENT_SECRET=your_client_secret \
   --env SOLAX_DEVICE_SN=your_device_sn \
   --scope user \
-  -- uv run --directory /path/to/solax-cloud-mcp solax-cloud-mcp
+  -- dotnet /path/to/solax-cloud-mcp/src/SolaxCloudMcp/bin/Release/net10.0/SolaxCloudMcp.dll
 ```
 
 If the above doesn't work (environment variable propagation issues), edit your MCP config JSON directly:
@@ -92,12 +89,9 @@ Add this entry:
 ```json
 {
   "solax-cloud": {
-    "command": "uv",
+    "command": "dotnet",
     "args": [
-      "run",
-      "--directory",
-      "/path/to/solax-cloud-mcp",
-      "solax-cloud-mcp"
+      "/path/to/solax-cloud-mcp/src/SolaxCloudMcp/bin/Release/net10.0/SolaxCloudMcp.dll"
     ],
     "env": {
       "SOLAX_CLIENT_ID": "your_client_id",
@@ -270,7 +264,7 @@ If the forecast fails, nothing is charged in that window and the error is logged
 - `GET /api/automation`: enabled/dry-run status, next run, last result.
 - `POST /api/automation/preview`: plan for the next window, computed now, never written.
 
-House consumption comes from `AUTOMATION_CONSUMPTION_PROFILE`, 24 hourly kWh values (or a flat `AUTOMATION_DAILY_CONSUMPTION_KWH`). An optional `AUTOMATION_WEEKEND_CONSUMPTION_PROFILE` / `AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH` applies on weekends and Polish public holidays. To compute both from real data (house load = AC output minus grid power, 5-minute samples from SolaX history), run `python -m solax_cloud_mcp.consumption --since YYYY-MM-DD` with the `.env` loaded; it prints the two lines for `.env`.
+House consumption comes from `AUTOMATION_CONSUMPTION_PROFILE`, 24 hourly kWh values (or a flat `AUTOMATION_DAILY_CONSUMPTION_KWH`). An optional `AUTOMATION_WEEKEND_CONSUMPTION_PROFILE` / `AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH` applies on weekends and Polish public holidays. To compute both from real data (house load = AC output minus grid power, 5-minute samples from SolaX history), run `dotnet run -c Release --project src/SolaxCloudMcp -- consumption --since YYYY-MM-DD` with the `.env` loaded; it prints the two lines for `.env`.
 
 See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
 
@@ -297,7 +291,7 @@ The plan also reports `recommendedExportFloorSoc`: the SOC floor that keeps enou
 - the decision history (charge and export decisions, newest first),
 - the export on/off switch.
 
-The page itself holds no data. It asks once for `HTTP_API_KEY`, keeps it in the browser's `localStorage` and calls the API with it. Set `DECISIONS_FILE` (JSON lines) to keep the decision history across restarts. Do not expose the port to the internet without an extra login layer in front (VPN or an authenticating reverse proxy).
+The page is a Blazor Server app with [Syncfusion Blazor](https://www.syncfusion.com/blazor-components) components (charts, grids, dashboard layout). It runs on the server and reads the planners directly; the browser keeps one WebSocket connection to the server. The page shows no data until the browser gives the right `HTTP_API_KEY`. It asks for the key once and keeps it in the browser's `localStorage`. Set `SYNCFUSION_LICENSE_KEY` to your Syncfusion licence key; without it the components work but show a licence banner. Set `DECISIONS_FILE` (JSON lines) to keep the decision history across restarts. Do not expose the port to the internet without an extra login layer in front (VPN or an authenticating reverse proxy).
 
 ## HTTP Server
 
@@ -305,11 +299,11 @@ The HTTP server serves the REST API, the dashboard and the two planners. Run it 
 
 ```bash
 set -a; source .env; set +a
-TRANSPORT=http uv run python -m solax_cloud_mcp
+TRANSPORT=http dotnet run -c Release --project src/SolaxCloudMcp
 curl http://localhost:8000/health
 ```
 
-`HTTP_API_KEY` is required. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` and paste the result into `.env`. The server listens on `127.0.0.1:8000` by default; set `HTTP_HOST=0.0.0.0` to reach it from the LAN.
+`HTTP_API_KEY` is required. Generate one with `openssl rand -base64 32` and paste the result into `.env`. The server listens on `127.0.0.1:8000` by default; set `HTTP_HOST=0.0.0.0` to reach it from the LAN.
 
 **Run only one instance.** Each new SolaX access token invalidates the previous one, and two servers would also fight over the inverter.
 
@@ -343,35 +337,35 @@ All endpoints except `/health` and `/dashboard` need `Authorization: Bearer <HTT
 
 ### Quick Smoke Test
 
-Before registering with Claude, you can test the client directly:
+Before registering with Claude, you can test the connection to SolaX. Start the HTTP server (see [HTTP Server](#http-server)) and read the live data:
 
 ```bash
-uv run --env-file .env python -c \
-  "import asyncio; from solax_cloud_mcp.client import fetch_realtime_data; \
-   from solax_cloud_mcp.config import get_default_device_sn; \
-   print(asyncio.run(fetch_realtime_data(get_default_device_sn())))"
+curl -X POST -H "Authorization: Bearer $HTTP_API_KEY" -H "Content-Type: application/json" -d '{}' http://localhost:8000/api/realtime-data
 ```
+
+Do not do this while another server instance runs with the same SolaX client ID (see "Run only one instance").
 
 ### Run Tests
 
 ```bash
-uv run pytest -q
+dotnet test
 ```
 
-The tests use `respx` mocks and fakes instead of the real APIs (SolaX, Solcast, PSE), so they need no credentials and never touch the inverter. They cover:
+The tests use a fake HTTP handler and fakes instead of the real APIs (SolaX, Solcast, PSE), so they need no credentials and never touch the inverter. They cover:
 - response shaping, status decoding and config validation,
 - the SolaX client (token refresh on 10402, remote control commands),
 - the Solcast forecast and its cache, RCE price parsing,
 - the charge and export planners, and the scheduler safety rules (exit remote control after errors, after a restart and at the window end; no export while grid charging),
 - the HTTP routes (auth, error mapping, export switch, dashboard settings),
-- the consumption profile tool.
+- the consumption profile tool,
+- the planners against recorded results of the earlier Python server (`tests/SolaxCloudMcp.Tests/golden/`), including DST change days.
 
 ### Interactive Inspection
 
-If you have the MCP CLI tools installed:
+With the MCP Inspector (needs Node.js), with the `.env` loaded:
 
 ```bash
-uv run --env-file .env mcp dev src/solax_cloud_mcp/server.py
+npx @modelcontextprotocol/inspector dotnet src/SolaxCloudMcp/bin/Release/net10.0/SolaxCloudMcp.dll
 ```
 
 ## Rate Limiting
@@ -472,42 +466,44 @@ The battery's `battery.status.code` is an integer:
 
 ```
 solax-cloud-mcp/
-├── src/solax_cloud_mcp/
-│   ├── __init__.py         # Package metadata
-│   ├── __main__.py         # Entry point: MCP (stdio) or HTTP, by TRANSPORT
-│   ├── server.py           # MCP tools and the *_impl functions shared with HTTP
-│   ├── http_server.py      # FastAPI routes, auth, scheduler start/stop
-│   ├── automation.py       # Tariff windows, charge planner, export planner, scheduler
-│   ├── client.py           # SolaX API calls, rate limit, remote control commands
-│   ├── auth.py             # OAuth2 token management
-│   ├── config.py           # Environment variable handling
-│   ├── models.py           # Response shaping
-│   ├── forecast.py         # Solcast forecast and cache
-│   ├── prices.py           # RCE prices from PSE
-│   ├── consumption.py      # Consumption profiles from SolaX history (CLI)
-│   └── dashboard.html      # Dashboard page
-├── tests/
-│   ├── fixtures/           # Captured API responses
-│   ├── test_automation.py  # Planners and scheduler
-│   ├── test_client.py      # SolaX client
-│   ├── test_config.py      # Configuration
-│   ├── test_consumption.py # Consumption profiles
-│   ├── test_forecast.py    # Solcast
-│   ├── test_http_server.py # HTTP routes
-│   ├── test_models.py      # Response shaping
-│   └── test_prices.py      # RCE prices
+├── SolaxCloudMcp.slnx          # Solution: the app and the tests
+├── src/SolaxCloudMcp/
+│   ├── Program.cs              # Entry point: MCP (stdio) or HTTP, by TRANSPORT
+│   ├── McpTools.cs             # MCP tools and the stdio server
+│   ├── SolaxService.cs         # Logic shared by the MCP tools and the HTTP routes
+│   ├── HttpServer.cs           # ASP.NET Core routes, auth, scheduler start/stop
+│   ├── Automation.cs           # Tariff windows, settings, charge planner, export planner
+│   ├── AutomationScheduler.cs  # Background loops that run the planners and write to the inverter
+│   ├── SolaxClient.cs          # SolaX API calls, rate limit, remote control commands
+│   ├── SolaxAuth.cs            # OAuth2 token management
+│   ├── Config.cs               # Environment variable handling
+│   ├── Models.cs               # Response shaping
+│   ├── Forecast.cs             # Solcast forecast and cache
+│   ├── Prices.cs               # RCE prices from PSE
+│   ├── Consumption.cs          # Consumption profiles from SolaX history (CLI)
+│   ├── Util.cs                 # JSON, rounding and local-time helpers
+│   └── Components/             # Dashboard page (Blazor Server + Syncfusion): App.razor, Dashboard.razor
+├── tests/SolaxCloudMcp.Tests/
+│   ├── fixtures/               # Captured API responses
+│   ├── golden/                 # Planner results recorded from the earlier Python server
+│   ├── GoldenTests.cs          # C# planners give the same results as the Python server did
+│   ├── AutomationTests.cs      # Planners and scheduler
+│   ├── HttpServerTests.cs      # HTTP routes and the MCP tool list
+│   ├── ForecastTests.cs        # Solcast
+│   ├── ModelsTests.cs          # Response shaping
+│   ├── SmallTests.cs           # Config, SolaX client, auth, prices, consumption
+│   └── TestSupport.cs          # Fakes and helpers
 ├── Dockerfile, docker-compose.yml
-├── .env.example            # All settings with comments
-└── pyproject.toml          # Project metadata and dependencies
+└── .env.example                # All settings with comments
 ```
 
 ### Adding Features
 
 To add a new data source or tool:
 
-1. Call the external API in its own module (like `client.py`, `forecast.py`, `prices.py`).
-2. Write a `*_impl` function in `server.py`, so MCP and HTTP share it.
-3. Register the MCP tool in `server.py` and the route in `http_server.py`.
+1. Call the external API in its own class (like `SolaxClient.cs`, `Forecast.cs`, `Prices.cs`).
+2. Write a method in `SolaxService.cs`, so MCP and HTTP share it.
+3. Register the MCP tool in `McpTools.cs` and the route in `HttpServer.cs`.
 4. Anything that writes to the inverter ships with a dry-run switch that is on by default.
 
 ## License

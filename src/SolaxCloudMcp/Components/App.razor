@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <base href="/" />
+    <title>SolaX Dashboard</title>
+    <link id="sf-theme" rel="stylesheet" href="_content/Syncfusion.Blazor.Themes/fluent2.css" />
+    <script>
+        // Theme and API key live in the browser. The theme is applied before first paint, so the page never flashes.
+        window.solax = {
+            get: name => { try { return localStorage.getItem(name); } catch { return null; } },
+            set: (name, value) => { try { value == null ? localStorage.removeItem(name) : localStorage.setItem(name, value); } catch { } },
+            theme: () => document.documentElement.dataset.theme,
+            apply: dark => {
+                document.documentElement.dataset.theme = dark ? "dark" : "light";
+                document.getElementById("sf-theme").href = `_content/Syncfusion.Blazor.Themes/fluent2${dark ? "-dark" : ""}.css`;
+            },
+            toggle: () => {
+                const dark = solax.theme() !== "dark";
+                solax.set("solaxTheme", dark ? "dark" : "light");
+                solax.apply(dark);
+                return dark;
+            },
+        };
+        (() => {
+            const pref = solax.get("solaxTheme") || "auto";
+            solax.apply(pref === "auto" ? matchMedia("(prefers-color-scheme: dark)").matches : pref === "dark");
+        })();
+    </script>
+    <style>
+        :root { --bg:#f5f4f0; --surface:#fff; --sunken:#ebe9e3; --ink:#1a1f24; --muted:#545b63; --border:#d6d3cb;
+            --ok:#166534; --ok-tint:#e8f0eb; --warn:#854d0e; --warn-tint:#f3ede7; --bad:#b91c1c; --bad-tint:#f8e8e8; }
+        [data-theme="dark"] { --bg:#0e1316; --surface:#161d21; --sunken:#1f292e; --ink:#e7e5df; --muted:#a3abb3; --border:#2c373e;
+            --ok:#4ade80; --ok-tint:#1c342c; --warn:#facc15; --warn-tint:#313220; --bad:#f87171; --bad-tint:#31272b; }
+        * { box-sizing:border-box; }
+        body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,sans-serif; }
+        .top { display:flex; flex-wrap:wrap; align-items:center; gap:12px 24px; padding:14px 32px; border-bottom:1px solid var(--border); background:var(--surface); }
+        .top h1 { margin:0; font-size:16px; line-height:20px; font-weight:600; }
+        .brand { flex-grow:1; }
+        .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+        .muted { color:var(--muted); } .small { font-size:12px; } .err { color:var(--bad); }
+        .num, .kpi b, .strip b, table.kv td { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums; }
+        .badge { display:inline-flex; align-items:center; height:24px; padding:0 10px; border-radius:999px; font-size:12px; font-weight:500; white-space:nowrap; }
+        .badge.ok { background:var(--ok-tint); color:var(--ok); } .badge.warn { background:var(--warn-tint); color:var(--warn); } .badge.bad { background:var(--bad-tint); color:var(--bad); }
+        main { max-width:1440px; margin:0 auto; padding:24px 32px 48px; display:flex; flex-direction:column; gap:16px; }
+        .strip { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); border:1px solid var(--border); border-radius:8px; background:var(--surface); overflow:hidden; }
+        .strip > div { padding:16px 20px; display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--border); min-width:0; }
+        .strip > div:last-child { border-right:0; }
+        .strip b { font-size:30px; line-height:36px; font-weight:500; } .strip b small { font-size:15px; color:var(--muted); }
+        .meter { height:6px; border-radius:3px; background:var(--sunken); overflow:hidden; } .meter i { display:block; height:100%; background:var(--ok); }
+        .panel-title { font-size:15px; font-weight:600; padding:10px 16px; }
+        .panel-body { padding:0 16px 16px; display:flex; flex-direction:column; gap:12px; height:100%; overflow:auto; }
+        .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:8px; }
+        .kpi { padding:10px 12px; border-radius:8px; background:var(--sunken); display:flex; flex-direction:column; min-width:0; }
+        .kpi span { font-size:12px; color:var(--muted); } .kpi b { font-size:20px; line-height:28px; font-weight:500; }
+        .kpi.flat { background:none; padding:0; } .kpi.flat b { font-size:15px; line-height:22px; }
+        table.kv { width:100%; border-collapse:collapse; font-size:13px; }
+        table.kv th, table.kv td { padding:7px 0; border-top:1px solid var(--border); vertical-align:top; }
+        table.kv th { text-align:left; color:var(--muted); font-weight:500; font-size:12px; } table.kv td { text-align:right; white-space:nowrap; }
+        .login { max-width:420px; display:flex; flex-direction:column; gap:12px; padding:16px; background:var(--surface); border:1px solid var(--border); border-radius:8px; }
+        .e-chart text { font-family:system-ui,sans-serif !important; } /* the theme asks for Segoe UI, which only Windows has */
+        .layout-host { width:100%; min-width:0; overflow:hidden; }
+        .e-dashboardlayout .e-panel { border-radius:8px; border:1px solid var(--border); }
+        @@media (max-width:1100px) { .strip { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+        @@media (max-width:720px) { .top, main { padding-left:16px; padding-right:16px; } .strip { grid-template-columns:repeat(2,minmax(0,1fr)); } .strip > div { border-bottom:1px solid var(--border); } }
+    </style>
+    <HeadOutlet />
+</head>
+<body>
+    @* No prerender: the page needs the API key from the browser before it may show any data *@
+    <Routes @rendermode="new InteractiveServerRenderMode(prerender: false)" />
+    <script src="_content/Syncfusion.Blazor.Core/scripts/syncfusion-blazor.min.js"></script>
+    <script src="_framework/blazor.web.js"></script>
+</body>
+</html>

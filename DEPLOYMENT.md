@@ -7,24 +7,23 @@ This MCP server can be deployed in two modes:
 
 ## Proxmox LXC with systemd (no Docker)
 
-The production instance runs this way: a Debian 13 LXC (1 vCPU, 512 MB RAM, 4 GB disk, unprivileged, start on boot), the app in `/opt/solax/app` owned by a `solax` system user, dependencies installed with `uv`.
+The production instance runs this way: a Debian 13 LXC (1 vCPU, 512 MB RAM, 4 GB disk, unprivileged, start on boot), the app in `/opt/solax/app` owned by a `solax` system user. The app is published self-contained on the dev machine, so the container needs no .NET install.
 
 **Run only one instance.** Each new SolaX access token invalidates the previous one, and two servers would also fight over the inverter.
 
 ```bash
 # In the container (as root)
-apt-get install -y curl ca-certificates rsync
+apt-get install -y ca-certificates tzdata rsync
 useradd --system --create-home --home-dir /opt/solax --shell /usr/sbin/nologin solax
-curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
 
-# From the dev machine: copy tracked files and .env
-# (in it set HTTP_HOST=0.0.0.0 and SOLCAST_CACHE_FILE=/opt/solax/solcast-cache.json and DECISIONS_FILE=/opt/solax/decisions.jsonl and SETTINGS_FILE=/opt/solax/settings.json)
-git ls-files | rsync -a --files-from=- ./ root@<lxc-ip>:/opt/solax/app/
+# On the dev machine (needs the .NET 10 SDK): build for the container and copy it with .env
+# (in .env set HTTP_HOST=0.0.0.0 and SOLCAST_CACHE_FILE=/opt/solax/solcast-cache.json and DECISIONS_FILE=/opt/solax/decisions.jsonl and SETTINGS_FILE=/opt/solax/settings.json)
+dotnet publish src/SolaxCloudMcp -c Release -r linux-x64 --self-contained -o publish
+rsync -a --delete --exclude .env publish/ root@<lxc-ip>:/opt/solax/app/
 rsync -a .env root@<lxc-ip>:/opt/solax/app/.env
 
 # In the container
 chmod 600 /opt/solax/app/.env && chown -R solax:solax /opt/solax
-runuser -u solax -- env UV_CACHE_DIR=/opt/solax/.cache/uv sh -c 'cd /opt/solax/app && uv sync --frozen --no-dev'
 ```
 
 `/etc/systemd/system/solax.service`:
@@ -39,10 +38,10 @@ After=network-online.target
 User=solax
 WorkingDirectory=/opt/solax/app
 EnvironmentFile=/opt/solax/app/.env
-ExecStart=/opt/solax/app/.venv/bin/python -m solax_cloud_mcp
+ExecStart=/opt/solax/app/SolaxCloudMcp
 Restart=on-failure
 RestartSec=10
-# On stop the server exits SolaX remote control before quitting
+# On stop the server exits SolaX remote control before quitting (it takes up to 45 s for this)
 TimeoutStopSec=60
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -59,7 +58,67 @@ systemctl daemon-reload && systemctl enable --now solax
 journalctl -u solax -f
 ```
 
-To update: repeat the `rsync` of tracked files, run `uv sync --frozen --no-dev` again as `solax`, then `systemctl restart solax`.
+To update: run `dotnet publish` and the first `rsync` again, then `systemctl restart solax`. `--delete` removes everything else in `/opt/solax/app/`, so keep the state files (`*_FILE` paths) outside that directory.
+
+### Switch from the Python version
+
+The C# server reads the same `.env` and the same state files (`SOLCAST_CACHE_FILE`, `DECISIONS_FILE`, `SETTINGS_FILE`). The two versions must never run at the same time with the real SolaX credentials.
+
+**Step 1. Copy the new build next to the old server.** The Python server keeps running.
+
+```bash
+# In the container: the build below is for x86_64. For aarch64 publish with -r linux-arm64.
+uname -m
+apt-get install -y ca-certificates tzdata
+
+# On the dev machine
+dotnet publish src/SolaxCloudMcp -c Release -r linux-x64 --self-contained -o publish
+rsync -a --delete publish/ root@<lxc-ip>:/opt/solax/app-dotnet/
+```
+
+**Step 2. Preflight in the container.** This run uses dummy SolaX credentials, another port and no automation. It never asks SolaX for a token, so it does not disturb the running server. It proves that the binary starts on this machine and that HTTPS and the time zone data work.
+
+```bash
+chown -R solax:solax /opt/solax/app-dotnet
+runuser -u solax -- env -i SOLAX_CLIENT_ID=dummy SOLAX_CLIENT_SECRET=dummy TRANSPORT=http \
+  HTTP_API_KEY=preflight HTTP_PORT=8001 /opt/solax/app-dotnet/SolaxCloudMcp &
+sleep 5
+curl -s http://127.0.0.1:8001/health                                      # {"status":"ok"}
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8001/dashboard  # 200
+curl -s -H 'Authorization: Bearer preflight' 'http://127.0.0.1:8001/api/prices?hours=2'  # RCE slots from PSE
+kill %1
+```
+
+Stop here if one of the three checks fails.
+
+**Step 3. Check where the state files are.** They must not be inside `/opt/solax/app/`, because step 4 moves that directory. If one is, move the file to `/opt/solax/` and change the path in `.env` after step 4. Without `SETTINGS_FILE` the export switch goes back to "on".
+
+```bash
+grep -E '^(SOLCAST_CACHE_FILE|DECISIONS_FILE|SETTINGS_FILE)=' /opt/solax/app/.env
+```
+
+**Step 4. Swap.** Stop the Python server, keep it for a rollback, start the C# server in dry run.
+
+```bash
+systemctl stop solax
+cp -p /etc/systemd/system/solax.service /opt/solax/solax.service.python
+mv /opt/solax/app /opt/solax/app-python && mv /opt/solax/app-dotnet /opt/solax/app
+cp -p /opt/solax/app-python/.env /opt/solax/app/.env
+# In /opt/solax/app/.env set AUTOMATION_DRY_RUN=1 and EXPORT_DRY_RUN=1 for the first run.
+# In /etc/systemd/system/solax.service set ExecStart=/opt/solax/app/SolaxCloudMcp
+chown -R solax:solax /opt/solax && systemctl daemon-reload && systemctl start solax
+journalctl -u solax -f
+```
+
+**Step 5. Check, then go live.**
+
+1. Open the dashboard. Check `GET /api/automation`, `POST /api/automation/preview` and `POST /api/export/preview`: the plans must look like the ones from before the switch.
+2. Send one harmless command to prove that commands reach the inverter: `curl -X POST -H "Authorization: Bearer $HTTP_API_KEY" http://127.0.0.1:8000/api/battery/export-stop` must answer `{"stopped":true}`. It only tells the inverter to leave remote control.
+3. Set the two dry-run variables back to their old values and run `systemctl restart solax`.
+
+The dashboard is now a Blazor Server page. A reverse proxy or tunnel in front of it must pass WebSocket connections (Cloudflare Tunnel does). Add `SYNCFUSION_LICENSE_KEY=...` to `.env` to remove the Syncfusion licence banner.
+
+**Rollback:** `systemctl stop solax`, then `mv /opt/solax/app /opt/solax/app-dotnet && mv /opt/solax/app-python /opt/solax/app`, copy `/opt/solax/solax.service.python` back to `/etc/systemd/system/solax.service`, then `systemctl daemon-reload && systemctl start solax`.
 
 ## Quick Start: HTTP Server on Raspberry Pi
 
@@ -114,8 +173,7 @@ SOLAX_CLIENT_SECRET=your_client_secret
 SOLAX_DEVICE_SN=your_device_sn
 
 # Generate a strong API key for HTTP authentication
-# Linux: openssl rand -base64 32
-# Python: python -c "import secrets; print(secrets.token_urlsafe(32))"
+# openssl rand -base64 32
 HTTP_API_KEY=your_random_api_key
 ```
 
@@ -169,6 +227,7 @@ The service is defined in [docker-compose.yml](docker-compose.yml). It publishes
 | `SOLCAST_CACHE_FILE` | Keep the Solcast cache across restarts | `/opt/solax/solcast-cache.json` |
 | `DECISIONS_FILE` | Keep the decision history across restarts | `/opt/solax/decisions.jsonl` |
 | `SETTINGS_FILE` | Keep the dashboard export switch across restarts | `/opt/solax/settings.json` |
+| `SYNCFUSION_LICENSE_KEY` | Syncfusion Blazor licence key for the dashboard (optional; a licence banner shows without it) | `Ngo9BigB...` |
 | `SOLAX_ALLOW_WRITE` | MCP mode: expose `set_battery_self_use_mode` tool to the LLM (default off) | `1` |
 | `HTTP_PORT` | Port number | `8000` |
 | `TRANSPORT` | Execution mode | `http` or `stdio` |
@@ -176,7 +235,7 @@ The service is defined in [docker-compose.yml](docker-compose.yml). It publishes
 **Health Check Explanation:**
 
 The health check runs every 30 seconds and:
-- Requests `http://localhost:8000/health` with Python's `urllib` (no `curl` in the image)
+- Runs `SolaxCloudMcp healthcheck`, which requests `http://127.0.0.1:8000/health` (there is no `curl` in the image)
 - Expects a 200 HTTP response
 - Waits up to 10 seconds for a response
 - After 3 consecutive failures, marks the container as unhealthy (but doesn't stop it)
@@ -247,7 +306,7 @@ Then configure Claude to use the Docker container as the MCP server. The exact c
 - Run directly, the HTTP server binds to `127.0.0.1` by default; set `HTTP_HOST=0.0.0.0` to listen on all interfaces
 - docker-compose publishes the port on `127.0.0.1` by default; set `HTTP_BIND_ADDR` to the Pi's LAN IP to reach it from other machines
 - Traffic is plain HTTP: the API key travels in cleartext on the LAN. Keep `HTTP_API_KEY` strong and prefer a TLS reverse proxy
-- The container runs as an unprivileged user (`uid 10001`)
+- The container runs as the unprivileged `app` user of the .NET image
 - `/docs`, `/redoc` and `/openapi.json` are disabled (no unauthenticated schema exposure)
 - For public exposure, use a reverse proxy (nginx/Caddy) with HTTPS and proper firewall rules
 - The API key is a bearer token in the `Authorization: Bearer <token>` header
@@ -257,7 +316,7 @@ Then configure Claude to use the Docker container as the MCP server. The exact c
 - The SolaX API allows 100 calls/minute per token
 - The client enforces a 0.7-second minimum spacing between calls
 - The HTTP server does NOT add additional rate limiting (assumes single consumer)
-- If you're building a multi-user application, add rate limiting (e.g., `slowapi`)
+- If you're building a multi-user application, add rate limiting (e.g. the ASP.NET Core rate limiter middleware)
 
 ### Inverter Control
 
@@ -362,7 +421,7 @@ docker-compose logs solax-http > server.log
 2. Configure your Claude client to use the server
 3. Rebuild: `docker-compose up -d --build`
 
-Both modes use the same client library. The planners and the dashboard run only in HTTP mode.
+Both modes use the same code. The planners and the dashboard run only in HTTP mode.
 
 ---
 

@@ -1,0 +1,587 @@
+@page "/dashboard"
+@implements IDisposable
+@inject DashboardData Data
+@inject IJSRuntime JS
+
+@* The dashboard. It runs on the server (Blazor Server) and reads the planners directly, with no HTTP call.
+   The page shows no data until the browser gives the right HTTP_API_KEY, like the earlier JavaScript page. *@
+
+<header class="top">
+    <div class="brand">
+        <h1>SolaX · automatyka baterii</h1>
+        <div class="small muted">@(_updated is { } updated ? $"Aktualizacja {updated:HH:mm:ss}" : "—")</div>
+    </div>
+    @if (_authorized)
+    {
+        <div class="row">
+            @if (Enabled) { @Badge(J.IsTrue(_automation!["dryRun"]), "Ładowanie: ") } else { <span class="badge bad">Ładowanie: WYŁ.</span> }
+            @if (J.IsTrue(At(_automation, "export", "enabled")) && J.IsTrue(At(_automation, "export", "active"))) { @Badge(J.IsTrue(At(_automation, "export", "dryRun")), "Eksport: ") } else { <span class="badge bad">Eksport: WYŁ.</span> }
+        </div>
+        <div class="row">
+            <SfButton OnClick="LoadAllAsync">Odśwież</SfButton>
+            <SfButton OnClick="LoadLiveAsync">Odczyt z falownika</SfButton>
+            <SfButton OnClick="ToggleThemeAsync" title="Zmień motyw">Motyw</SfButton>
+            <SfButton OnClick="LogoutAsync" title="Zmień klucz API">Wyloguj</SfButton>
+        </div>
+    }
+</header>
+
+<main>
+    @if (!_ready)
+    {
+        <span class="muted">Ładowanie…</span>
+    }
+    else if (!_authorized)
+    {
+        <form class="login" @onsubmit="LoginAsync">
+            <label class="small muted" for="key-input">HTTP_API_KEY</label>
+            <SfTextBox ID="key-input" Type="InputType.Password" @bind-Value="_keyInput" Autocomplete="AutoComplete.Off"></SfTextBox>
+            @if (_keyError) { <span class="small err">Zły klucz.</span> }
+            <SfButton IsPrimary="true" type="submit">Zapisz</SfButton>
+        </form>
+    }
+    else
+    {
+        var battery = At(_live, "battery");
+        var meter = At(_live, "meter1");
+        var soc = J.Num(At(battery, "soc_percent"));
+        var house = _live is null ? null : Planner.LiveHouseLoadKw(_live);
+        var readAt = Txt(At(_live, "device", "dataTime"));
+
+        <section class="strip" aria-label="Stan teraz">
+            <div><span class="small muted">Bateria SOC</span><b>@(soc is null ? "—" : Dec(soc, 0))<small> %</small></b><div class="meter" aria-hidden="true"><i style="width:@((soc ?? 0).ToString(CultureInfo.InvariantCulture))%"></i></div></div>
+            <div><span class="small muted">PV teraz</span><b>@Kw(At(_live, "mppt", "totalPower_W"))</b><span class="small muted">dziś @Dec(At(_live, "energy", "dailyYield_kWh"), 1) kWh</span></div>
+            <div><span class="small muted">Bateria (+ładowanie / −rozład.)</span><b>@Kw(At(battery, "chargeDischargePower_W"))</b><span class="small muted">@Dec(At(battery, "remainingEnergy_kWh"), 1) kWh w baterii</span></div>
+            <div><span class="small muted">Dom</span><b>@(house is null ? "—" : Dec(house))<small> kW</small></b><span class="small muted">odczyt @readAt</span></div>
+            <div><span class="small muted">Sieć (+eksport / −import)</span><b>@Kw(At(meter, "gridPower_W"))</b><span class="small muted">@(_live is null ? "Czekam na odczyt pętli eksportu…" : $"dziś import {Dec(At(meter, "todayImportEnergy_kWh"), 1)} / eksport {Dec(At(meter, "todayExportEnergy_kWh"), 1)} kWh")</span></div>
+        </section>
+
+        <span class="small muted">Panele można przesuwać za tytuł i zmieniać ich rozmiar. Układ zapisuje się w tej przeglądarce.</span>
+
+        @* The wrapper has no padding: the layout takes its cell width from its parent *@
+        <div class="layout-host">
+        <SfDashboardLayout ID="solax-layout" Columns="12" CellSpacing="@Spacing" CellAspectRatio="1.15" AllowDragging="true" AllowResizing="true"
+                           DraggableHandle=".panel-title" EnablePersistence="true" MediaQuery="max-width:900px">
+            <DashboardLayoutPanels>
+                <DashboardLayoutPanel Id="charge" Row="0" Column="0" SizeX="4" SizeY="4">
+                    <HeaderTemplate><div class="panel-title">Ładowanie z sieci</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @if (!Enabled)
+                            {
+                                <span>Automatyka wyłączona (AUTOMATION_ENABLED=0).</span>
+                            }
+                            else
+                            {
+                                var r = At(_automation, "lastResult");
+                                <div class="kpis">@Kpi(T(_automation!["nextRun"]), "następne uruchomienie", true)@Kpi(Txt(_automation["nextWindow"]), "okno taniej taryfy", true)</div>
+                                @if (r is null)
+                                {
+                                    <span class="muted">Brak wyniku od restartu serwera. Plan powstanie przy następnym uruchomieniu.</span>
+                                }
+                                else if (r["error"] is { } error)
+                                {
+                                    <span class="err">Ostatni przebieg (@T(r["runAt"])): @Txt(error)</span>
+                                }
+                                else
+                                {
+                                    var p = At(r, "peakSegment");
+                                    <span class="small muted">Ostatnia decyzja (@T(r["runAt"]), okno @Txt(r["window"])):</span>
+                                    <div class="kpis">
+                                        @Kpi(Txt(r["targetSoc"]) + " %", "docelowy SOC")@Kpi(YesNo(r["gridCharge"]), "ładuj z sieci")
+                                        @Kpi(Dec(r["needFromBattery_kWh"], 1) + " kWh", "potrzeba z baterii")@Kpi(YesNo(_automation["charging"]), "ładuje teraz")
+                                    </div>
+                                    @Rows(
+                                        ("Drogi okres", At(p, "start") is { } start ? $"{T(start)} – {Hm(At(p, "end"))} ({Txt(At(p, "hours"))} h)" : "—"),
+                                        ("Prognoza PV w tym czasie", $"{Dec(At(p, "pvForecast_kWh"), 1)} kWh ({Txt(r["percentile"])})"),
+                                        ("Zużycie domu w tym czasie", Dec(At(p, "consumption_kWh"), 1) + " kWh"),
+                                        ("Max deficyt", Dec(At(p, "maxDeficit_kWh"), 1) + " kWh"),
+                                        ("Min SOC", Txt(r["minSoc"]) + " %"),
+                                        ("Prognoza z", T(r["forecastFetchedAt"]) + (J.IsTrue(r["forecastStale"]) ? " (STARA)" : "")))
+                                }
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="export" Row="0" Column="4" SizeX="4" SizeY="4">
+                    <HeaderTemplate><div class="panel-title">Eksport do sieci</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @{ var e = At(_automation, "export"); }
+                            @if (!Enabled)
+                            {
+                                <span>—</span>
+                            }
+                            else if (!J.IsTrue(At(e, "enabled")))
+                            {
+                                <span>Eksport wyłączony (EXPORT_ENABLED=0).</span>
+                            }
+                            else
+                            {
+                                var active = J.IsTrue(e!["active"]);
+                                var x = At(e, "lastPlan");
+                                <div class="row">
+                                    <SfButton IsPrimary="@(!active)" OnClick="ToggleExportAsync">@(active ? "Wyłącz eksport" : "Włącz eksport")</SfButton>
+                                    @if (!J.IsTrue(e["persisted"])) { <span class="small err">Brak SETTINGS_FILE: po restarcie eksport znów będzie włączony.</span> }
+                                    @Error("export")
+                                </div>
+                                @if (!active)
+                                {
+                                    <span class="muted">Eksport wyłączony w dashboardzie. Serwer nie wysyła poleceń eksportu do falownika.</span>
+                                }
+                                else if (x is null || J.IsTrue(x["paused"]))
+                                {
+                                    <span class="small muted">Plan liczony co 15 min.</span>
+                                    <span class="muted">Brak planu.</span>
+                                }
+                                else if (x["error"] is { } error)
+                                {
+                                    <span class="err">@Txt(error)</span>
+                                }
+                                else
+                                {
+                                    var c = At(x, "currentSlot");
+                                    <span class="small muted">Plan liczony co 15 min.</span>
+                                    <div class="kpis">
+                                        @Kpi(Txt(x["socPercent"]) + " %", "SOC")@Kpi(Dec(x["surplus_kWh"], 1) + " kWh", "nadwyżka")
+                                        @Kpi(Dec(x["plannedExport_kWh"], 1) + " kWh", "plan sprzedaży")@Kpi(J.IsTrue(At(c, "export")) ? Dec(At(c, "dischargeSetpoint_kW"), 1) + " kW" : "nie", "eksport teraz")
+                                    </div>
+                                    @if (At(x, "execution", "action") is { } action) { <span>Wykonano: <b>@Txt(action)</b></span> }
+                                    @if (_slots.Count > 0)
+                                    {
+                                        <span class="small muted">Zaplanowane sloty (przychód ~@Dec(_slotRevenue) PLN):</span>
+                                        <SfGrid DataSource="_slots" Height="160" RowHeight="28">
+                                            <GridColumns>
+                                                <GridColumn Field="@nameof(SlotRow.From)" HeaderText="Od" Width="120"></GridColumn>
+                                                <GridColumn Field="@nameof(SlotRow.To)" HeaderText="Do" Width="70"></GridColumn>
+                                                <GridColumn Field="@nameof(SlotRow.Price)" HeaderText="Cena" Width="70"></GridColumn>
+                                                <GridColumn Field="@nameof(SlotRow.Export)" HeaderText="Eksport" Width="90"></GridColumn>
+                                                <GridColumn Field="@nameof(SlotRow.Power)" HeaderText="Moc" Width="80"></GridColumn>
+                                                <GridColumn Field="@nameof(SlotRow.Revenue)" HeaderText="PLN" Width="70"></GridColumn>
+                                            </GridColumns>
+                                        </SfGrid>
+                                    }
+                                    else
+                                    {
+                                        <span class="muted">Brak slotów do sprzedaży.</span>
+                                    }
+                                    @Rows(
+                                        ("Rezerwa dla domu", $"{Dec(x["reserveForHouse_kWh"], 1)} kWh do {T(x["horizonEnd"])}"),
+                                        ("Min SOC przy eksporcie", Txt(x["recommendedExportFloorSoc"]) + " %"),
+                                        ("Min cena RCE netto", Dec(x["minPrice_PLN_kWh"]) + " PLN/kWh"),
+                                        ("Obciążenie domu teraz", x["liveHouseLoad_kW"] is null ? "—" : Dec(x["liveHouseLoad_kW"]) + " kW"),
+                                        ("Prognoza PV dostępna", J.IsTrue(x["pvForecastAvailable"]) ? "tak" : "NIE (liczone jako 0)"),
+                                        ("Policzono", T(x["now"])))
+                                }
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="battery" Row="0" Column="8" SizeX="4" SizeY="4">
+                    <HeaderTemplate><div class="panel-title">Bateria</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @Error("battery")
+                            @if (_live is null)
+                            {
+                                <span class="muted">Czekam na odczyt pętli eksportu…</span>
+                            }
+                            else
+                            {
+                                @Rows(
+                                    ("Energia w baterii", Dec(At(battery, "remainingEnergy_kWh"), 1) + " kWh"),
+                                    ("Temperatura", Txt(At(battery, "temperature_C")) + " °C"),
+                                    ("SOH", Txt(At(battery, "soh_percent")) + " %"),
+                                    ("Cykle", Txt(At(battery, "cycleTimes"))),
+                                    ("Status baterii", Txt(At(battery, "status", "description"))),
+                                    ("Falownik", Txt(At(_live, "status", "description"))),
+                                    ("Odczyt z", readAt))
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="pv" Row="4" Column="0" SizeX="8" SizeY="5">
+                    <HeaderTemplate><div class="panel-title">Prognoza PV (Solcast)</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @Error("pv")
+                            @if (_forecast is not null)
+                            {
+                                var remaining = _forecast["remainingToday_kWh"];
+                                <div class="kpis">
+                                    @Kpi(Dec(At(remaining, "p50"), 1) + " kWh", $"jeszcze dziś · {Range(remaining)}")
+                                    @foreach (var day in _forecast["days"]!.AsArray())
+                                    {
+                                        @Kpi(Dec(At(day, "energy_kWh", "p50"), 1) + " kWh", $"{Day(J.Str(day!["date"]))} · {Range(day["energy_kWh"])}")
+                                    }
+                                </div>
+                                <div class="row small muted">
+                                    <span>Wykres</span>
+                                    <div style="width:260px"><SfSlider TValue="int" Min="1" Max="@_pvMaxDays" Value="_pvDays" ValueChanged="SetPvDays"></SfSlider></div>
+                                    <span class="num">@(_pvDays == 1 ? "1 dzień" : $"{_pvDays} dni")</span>
+                                </div>
+                                <SfChart Height="240px" Theme="ChartTheme" @key="_dark">
+                                    <ChartPrimaryXAxis ValueType="Syncfusion.Blazor.Charts.ValueType.DateTime" LabelFormat="dd.MM HH:mm"></ChartPrimaryXAxis>
+                                    <ChartPrimaryYAxis Title="kW"></ChartPrimaryYAxis>
+                                    <ChartTooltipSettings Enable="true" Shared="true"></ChartTooltipSettings>
+                                    <ChartSeriesCollection>
+                                        <ChartSeries DataSource="_pvPoints" XName="@nameof(PvPoint.Time)" High="@nameof(PvPoint.P90)" Low="@nameof(PvPoint.P10)" Name="p10–p90" Type="ChartSeriesType.RangeArea" Fill="#e0a43a" Opacity="0.3"></ChartSeries>
+                                        <ChartSeries DataSource="_pvPoints" XName="@nameof(PvPoint.Time)" YName="@nameof(PvPoint.P50)" Name="p50" Type="ChartSeriesType.Line" Fill="#e0a43a" Width="2.5"></ChartSeries>
+                                    </ChartSeriesCollection>
+                                </SfChart>
+                                <span class="small muted">Pobrano @T(_forecast["fetchedAt"])@(J.IsTrue(_forecast["stale"]) ? " — DANE STARE (błąd Solcast)" : "") · pasmo = p10–p90.</span>
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="schedule" Row="4" Column="8" SizeX="4" SizeY="5">
+                    <HeaderTemplate><div class="panel-title">Harmonogram</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @if (!J.IsTrue(At(_settings, "enabled")))
+                            {
+                                <span>Automatyka wyłączona.</span>
+                            }
+                            else
+                            {
+                                <SfGrid DataSource="_runs" RowHeight="28">
+                                    <GridColumns>
+                                        <GridColumn Field="@nameof(RunRow.RunAt)" HeaderText="Planer ładowania"></GridColumn>
+                                        <GridColumn Field="@nameof(RunRow.Window)" HeaderText="Okno"></GridColumn>
+                                    </GridColumns>
+                                </SfGrid>
+                                <span class="small muted">Pętla eksportu: @(_settings!["nextExportTick"] is { } tick ? $"następny przebieg {T(tick)}, potem co 15 min" : "wyłączona")</span>
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="prices" Row="9" Column="0" SizeX="8" SizeY="4">
+                    <HeaderTemplate><div class="panel-title">Ceny RCE (PLN/kWh netto)</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @Error("prices")
+                            @if (_prices is not null)
+                            {
+                                <SfChart Height="260px" Theme="ChartTheme" @key="_dark">
+                                    <ChartPrimaryXAxis ValueType="Syncfusion.Blazor.Charts.ValueType.DateTime" LabelFormat="dd.MM HH:mm"></ChartPrimaryXAxis>
+                                    <ChartTooltipSettings Enable="true" Shared="true"></ChartTooltipSettings>
+                                    <ChartSeriesCollection>
+                                        <ChartSeries DataSource="_pricePoints" XName="@nameof(PricePoint.Time)" YName="@nameof(PricePoint.Price)" Name="RCE" Type="ChartSeriesType.StepLine" Fill="#0e7490" Width="2"></ChartSeries>
+                                        @if (_minPrice is not null)
+                                        {
+                                            <ChartSeries DataSource="_pricePoints" XName="@nameof(PricePoint.Time)" YName="@nameof(PricePoint.Min)" Name="Min cena eksportu" Type="ChartSeriesType.Line" Fill="#b91c1c" Width="1.5" DashArray="6,4"></ChartSeries>
+                                        }
+                                    </ChartSeriesCollection>
+                                </SfChart>
+                                <span class="small muted">@(_pricePoints.Count > 0 ? $"Min {Dec(_prices["min"])}, max {Dec(_prices["max"])} PLN/kWh. Ceny na jutro PSE publikuje po południu." : "Brak cen.")</span>
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="profile" Row="9" Column="8" SizeX="4" SizeY="4">
+                    <HeaderTemplate><div class="panel-title">Profil zużycia (kWh/h)</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @if (_profile.Count > 0)
+                            {
+                                <SfChart Height="280px" Theme="ChartTheme" @key="_dark">
+                                    <ChartPrimaryXAxis ValueType="Syncfusion.Blazor.Charts.ValueType.Category" Interval="3"></ChartPrimaryXAxis>
+                                    <ChartTooltipSettings Enable="true" Shared="true"></ChartTooltipSettings>
+                                    <ChartSeriesCollection>
+                                        <ChartSeries DataSource="_profile" XName="@nameof(ProfilePoint.Hour)" YName="@nameof(ProfilePoint.Weekday)" Name="@_weekdayLabel" Type="ChartSeriesType.Column" Fill="#1e6f8a"></ChartSeries>
+                                        @if (_weekendLabel is not null)
+                                        {
+                                            <ChartSeries DataSource="_profile" XName="@nameof(ProfilePoint.Hour)" YName="@nameof(ProfilePoint.Weekend)" Name="@_weekendLabel" Type="ChartSeriesType.Column" Fill="#e0a43a"></ChartSeries>
+                                        }
+                                    </ChartSeriesCollection>
+                                </SfChart>
+                            }
+                            else
+                            {
+                                <span>—</span>
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="history" Row="13" Column="0" SizeX="8" SizeY="5">
+                    <HeaderTemplate><div class="panel-title">Historia decyzji</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @if (_history.Count == 0)
+                            {
+                                <span>Brak decyzji. Ustaw DECISIONS_FILE, żeby historia przetrwała restart.</span>
+                            }
+                            else
+                            {
+                                <SfGrid DataSource="_history" Height="380" RowHeight="28" AllowTextWrap="true">
+                                    <GridColumns>
+                                        <GridColumn Field="@nameof(HistoryRow.When)" HeaderText="Kiedy" Width="130"></GridColumn>
+                                        <GridColumn Field="@nameof(HistoryRow.Kind)" HeaderText="Co" Width="100"></GridColumn>
+                                        <GridColumn Field="@nameof(HistoryRow.Decision)" HeaderText="Decyzja"></GridColumn>
+                                        <GridColumn Field="@nameof(HistoryRow.Mode)" HeaderText="Tryb" Width="100"></GridColumn>
+                                    </GridColumns>
+                                </SfGrid>
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+
+                <DashboardLayoutPanel Id="settings" Row="13" Column="8" SizeX="4" SizeY="5">
+                    <HeaderTemplate><div class="panel-title">Ustawienia</div></HeaderTemplate>
+                    <ContentTemplate>
+                        <div class="panel-body">
+                            @if (At(_settings, "automation") is not { } a)
+                            {
+                                <span>—</span>
+                            }
+                            else
+                            {
+                                var t = a["tariff"];
+                                @Rows(
+                                    ("Strefa czasowa", Txt(a["tz"])), ("Pojemność baterii", Dec(a["capacity_kwh"], 1) + " kWh"), ("Min SOC", Txt(a["min_soc"]) + " %"),
+                                    ("Max SOC z sieci", Txt(a["max_grid_soc"]) + " %"), ("Zapas bezpieczeństwa", Dec(a["safety_margin_kwh"], 1) + " kWh"), ("Sprawność", Dec(a["efficiency"])),
+                                    ("Percentyl prognozy", Txt(a["percentile"])), ("Wyprzedzenie planera", Txt(a["lead_minutes"]) + " min"), ("Tryb ładowania", J.IsTrue(a["dry_run"]) ? "DRY RUN" : "na żywo"),
+                                    ("Taryfa — okna (zima / całość)", Windows(At(t, "windows"))), ("Taryfa — okna lato", Windows(At(t, "summer_windows"))),
+                                    ("Weekendy tanie", J.IsTrue(At(t, "weekends")) ? "tak" : "nie"), ("Święta tanie", J.IsTrue(At(t, "holidays")) ? "tak" : "nie"))
+                                @if (At(_settings, "export") is { } x)
+                                {
+                                    <span class="small muted">Eksport</span>
+                                    @Rows(
+                                        ("Min cena RCE netto", Dec(x["min_price_pln_kwh"]) + " PLN/kWh"), ("Max moc", Dec(x["max_power_kw"], 1) + " kW"),
+                                        ("Min energia w slocie", Dec(x["min_slot_kwh"]) + " kWh"), ("Mnożnik ceny", Txt(x["price_multiplier"])), ("Tryb", J.IsTrue(x["dry_run"]) ? "DRY RUN" : "na żywo"))
+                                }
+                            }
+                        </div>
+                    </ContentTemplate>
+                </DashboardLayoutPanel>
+            </DashboardLayoutPanels>
+        </SfDashboardLayout>
+        </div>
+    }
+</main>
+
+@code {
+    record PvPoint(DateTime Time, double P10, double P50, double P90);
+    record PricePoint(DateTime Time, double Price, double? Min);
+    record ProfilePoint(string Hour, double Weekday, double? Weekend);
+    record SlotRow(string From, string To, string Price, string Export, string Power, string Revenue);
+    record RunRow(string RunAt, string Window);
+    record HistoryRow(string When, string Kind, string Decision, string Mode);
+
+    static readonly double[] Spacing = [16, 16];
+    static readonly string[] DayNames = ["niedz.", "pon.", "wt.", "śr.", "czw.", "pt.", "sob."];
+
+    readonly Dictionary<string, string> _errors = [];
+    Timer? _timer;
+    bool _ready, _authorized, _keyError, _dark;
+    string? _keyInput;
+    DateTime? _updated;
+    JsonObject? _automation, _settings, _forecast, _prices, _live;
+    List<PvPoint> _pvPoints = [], _pvAll = [];
+    List<PricePoint> _pricePoints = [];
+    List<ProfilePoint> _profile = [];
+    List<SlotRow> _slots = [];
+    List<RunRow> _runs = [];
+    List<HistoryRow> _history = [];
+    double _slotRevenue;
+    double? _minPrice;
+    int _pvDays = 2, _pvMaxDays = 7;
+    string _weekdayLabel = "";
+    string? _weekendLabel;
+
+    TimeZoneInfo Tz => Data.Scheduler?.Settings.Tz ?? LocalTime.Zone(Config.SolarTimezone());
+    bool Enabled => J.IsTrue(At(_automation, "enabled"));
+    // The charts have @key="_dark": a theme change builds them again, because the legend keeps its old text colour otherwise
+    Theme ChartTheme => _dark ? Theme.Fluent2Dark : Theme.Fluent2;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        _dark = await JS.InvokeAsync<string>("solax.theme") == "dark";
+        _authorized = Data.IsKey(await JS.InvokeAsync<string?>("solax.get", "solaxKey"));
+        _ready = true;
+        if (_authorized) await StartAsync();
+        StateHasChanged();
+    }
+
+    async Task StartAsync()
+    {
+        await LoadAllAsync();
+        // Like the earlier page: the planner status refreshes every minute
+        _timer = new Timer(_ => InvokeAsync(() =>
+        {
+            LoadAutomation();
+            StateHasChanged();
+        }), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+    }
+
+    async Task LoginAsync()
+    {
+        _keyError = !Data.IsKey(_keyInput);
+        if (_keyError) return;
+        await JS.InvokeVoidAsync("solax.set", "solaxKey", _keyInput);
+        _keyInput = null;
+        _authorized = true;
+        await StartAsync();
+    }
+
+    async Task LogoutAsync()
+    {
+        await JS.InvokeVoidAsync("solax.set", "solaxKey", null);
+        _timer?.Dispose();
+        _authorized = false;
+    }
+
+    async Task ToggleThemeAsync() => _dark = await JS.InvokeAsync<bool>("solax.toggle");
+
+    public void Dispose() => _timer?.Dispose();
+
+    // ---- Loading ----
+
+    /// <summary>Run one section's load; an error is shown in that section and the others still load.</summary>
+    async Task SectionAsync(string id, Func<Task> load)
+    {
+        _errors.Remove(id);
+        try
+        {
+            await load();
+        }
+        catch (ToolException e)
+        {
+            _errors[id] = HttpServer.ToHttpError(e).Message;
+        }
+    }
+
+    async Task LoadAllAsync()
+    {
+        LoadAutomation();
+        LoadSettings();
+        await SectionAsync("pv", async () =>
+        {
+            _forecast = null;
+            _forecast = await Data.Service.GetSolarForecastAsync(168);
+            _pvAll = _forecast["hourly"]!.AsArray().Select(h => new PvPoint(
+                Local(h!["time"])!.Value, J.Num(At(h, "power_kW", "p10")) ?? 0, J.Num(At(h, "power_kW", "p50")) ?? 0, J.Num(At(h, "power_kW", "p90")) ?? 0)).ToList();
+            var now = LocalTime.ToLocal(LocalTime.Now, Tz).DateTime;
+            _pvMaxDays = _pvAll.Count > 0 ? Math.Max(1, (int)Math.Ceiling((_pvAll[^1].Time - now).TotalDays)) : 1;
+            SetPvDays(Math.Min(_pvDays, _pvMaxDays));
+        });
+        await SectionAsync("prices", async () =>
+        {
+            _prices = null;
+            _prices = await Data.Service.GetEnergyPricesAsync(48);
+            _pricePoints = _prices["slots"]!.AsArray().Select(s => new PricePoint(Local(s!["start"])!.Value, J.Num(s["price_PLN_kWh"]) ?? 0, _minPrice)).ToList();
+        });
+        _updated = LocalTime.ToLocal(LocalTime.Now, Tz).DateTime;
+    }
+
+    void LoadAutomation()
+    {
+        _automation = Data.Scheduler?.Status() ?? new JsonObject { ["enabled"] = false };
+        if (At(_automation, "export", "lastRealtime") is JsonObject realtime) _live = realtime.DeepClone().AsObject();
+        var slots = At(_automation, "export", "lastPlan", "slots") as JsonArray ?? [];
+        _slots = slots.Select(s => new SlotRow(T(s!["start"]), Hm(s["end"]), Dec(s["price_PLN_kWh"]), Dec(s["export_kWh"]) + " kWh", Dec(s["dischargeSetpoint_kW"], 1) + " kW", Dec(s["revenue_PLN"]))).ToList();
+        _slotRevenue = slots.Sum(s => J.Num(s!["revenue_PLN"]) ?? 0);
+        _history = (Data.Scheduler?.History ?? []).AsEnumerable().Reverse().Select(HistoryOf).ToList();
+        _updated = LocalTime.ToLocal(LocalTime.Now, Tz).DateTime;
+    }
+
+    void LoadSettings()
+    {
+        _settings = HttpServer.DashboardSettings(Data.Scheduler);
+        _runs = (_settings["upcomingRuns"] as JsonArray ?? []).Select(r => new RunRow(T(r!["runAt"]), $"{Txt(r["window"])} (od {T(r["windowStart"])})")).ToList();
+        _minPrice = J.Num(At(_settings, "export", "min_price_pln_kwh"));
+        var weekday = (At(_settings, "automation", "consumption_profile") as JsonArray)?.Select(v => J.Num(v) ?? 0).ToList();
+        var weekend = (At(_settings, "automation", "weekend_profile") as JsonArray)?.Select(v => J.Num(v) ?? 0).ToList();
+        _profile = weekday is null ? [] : weekday.Select((kwh, hour) => new ProfilePoint($"{hour}:00", kwh, weekend?[hour])).ToList();
+        _weekdayLabel = $"Dzień roboczy ({Dec(weekday?.Sum(), 1)} kWh)";
+        _weekendLabel = weekend is null ? null : $"Weekend/święto ({Dec(weekend.Sum(), 1)} kWh)";
+    }
+
+    async Task LoadLiveAsync() => await SectionAsync("battery", async () => _live = await Data.Service.GetRealtimeDataAsync());
+
+    void SetPvDays(int days)
+    {
+        _pvDays = days;
+        var until = LocalTime.ToLocal(LocalTime.Now, Tz).DateTime.AddDays(days);
+        _pvPoints = _pvAll.Where(p => p.Time < until).ToList();
+    }
+
+    async Task ToggleExportAsync()
+    {
+        _errors.Remove("export");
+        try
+        {
+            await Data.Scheduler!.SetExportActiveAsync(!Data.Scheduler.ExportActive);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            _errors["export"] = "Nie można zapisać SETTINGS_FILE.";
+        }
+        LoadAutomation();
+    }
+
+    HistoryRow HistoryOf(JsonObject e)
+    {
+        var action = J.Str(e["action"]);
+        var isSwitch = action is "enabled" or "disabled";
+        var isPlan = J.Str(e["kind"]) == "charge" && action is null;
+        var decision =
+            e["error"] is { } error ? Txt(error)
+            : isSwitch ? (action == "enabled" ? "Włączono" : "Wyłączono") + " eksport w dashboardzie"
+            : isPlan ? $"Ładowanie z sieci do {Txt(e["targetSoc"])} % ({(J.IsTrue(e["gridCharge"]) ? "tak" : "nie")}), okno {Txt(e["window"])}, potrzeba {Txt(e["needFromBattery_kWh"])} kWh"
+            : $"{action}{(J.Num(e["setpoint_W"]) is { } w ? " " + Dec(w / 1000, 1) + " kW" : "")} do {Txt(e["stopSoc"])} % SOC, SOC teraz {Txt(e["socPercent"])} %{(e["price_PLN_kWh"] is { } price ? ", cena " + Txt(price) : "")}";
+        var mode = e["error"] is not null ? "BŁĄD" : isSwitch ? "" : J.IsTrue(e["dryRun"]) ? "DRY RUN" : isPlan ? (J.IsTrue(e["applied"]) ? "WYSŁANO" : "") : "NA ŻYWO";
+        return new HistoryRow(T(e["time"]), J.Str(e["kind"]) == "charge" ? "Ładowanie" : "Eksport", decision, mode);
+    }
+
+    // ---- Formatting (Polish; the app runs with invariant globalization, so no culture data is used) ----
+
+    static JsonNode? At(JsonNode? node, params string[] path)
+    {
+        foreach (var key in path) node = (node as JsonObject)?[key];
+        return node;
+    }
+
+    DateTime? Local(JsonNode? iso)
+    {
+        try
+        {
+            return J.Str(iso) is { } text ? LocalTime.ToLocal(J.ParseIso(text), Tz).DateTime : null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
+    string T(JsonNode? iso) => Local(iso) is { } t ? $"{DayNames[(int)t.DayOfWeek]} {t:dd.MM}, {t:HH:mm}" : "—";
+    string Hm(JsonNode? iso) => Local(iso) is { } t ? $"{t:HH:mm}" : "—";
+    static string Day(string? date) => DateOnly.TryParseExact(date, "yyyy-MM-dd", out var d) ? $"{DayNames[(int)d.DayOfWeek]} {d:dd.MM}" : "—";
+    static string Dec(double? value, int digits = 2) => value is { } v ? v.ToString("F" + digits, CultureInfo.InvariantCulture).Replace('.', ',') : "—";
+    static string Dec(JsonNode? node, int digits = 2) => Dec(J.Num(node), digits);
+    static string Txt(JsonNode? node) => node is null ? "—" : J.Str(node) ?? node.ToJsonString();
+    static string YesNo(JsonNode? node) => J.IsTrue(node) ? "TAK" : "NIE";
+    static string Range(JsonNode? energy) => $"p10 {Dec(At(energy, "p10"), 1)} – p90 {Dec(At(energy, "p90"), 1)}";
+    static string Windows(JsonNode? windows) => windows is JsonArray list ? string.Join(", ", list.Select(w => $"{J.Num(w![0]):00}–{J.Num(w[1]):00}")) : "—";
+
+    static RenderFragment Kw(JsonNode? watts) => J.Num(watts) is { } w ? @<text>@Dec(w / 1000)<small> kW</small></text> : @<text>—</text>;
+    static RenderFragment Kpi(string value, string label, bool flat = false) => @<div class="kpi @(flat ? "flat" : "")"><span>@label</span><b>@value</b></div>;
+    static RenderFragment Badge(bool dryRun, string what = "") => dryRun ? @<span class="badge warn">@(what)DRY RUN</span> : @<span class="badge ok">@(what)NA ŻYWO</span>;
+    RenderFragment Error(string id) => _errors.TryGetValue(id, out var message) ? @<span class="err">@message</span> : @<text></text>;
+
+    static RenderFragment Rows(params (string Key, string Value)[] pairs) =>
+        @<table class="kv">
+            @foreach (var (key, value) in pairs)
+            {
+                <tr><th>@key</th><td>@value</td></tr>
+            }
+        </table>;
+}

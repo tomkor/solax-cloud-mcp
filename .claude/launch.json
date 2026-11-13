@@ -1,0 +1,18 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dashboard-dummy",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "SOLAX_CLIENT_ID=dummy", "SOLAX_CLIENT_SECRET=dummy", "SOLAX_DEVICE_SN=DUMMY", "TRANSPORT=http",
+        "HTTP_API_KEY=preview", "HTTP_PORT=18765", "AUTOMATION_ENABLED=1", "AUTOMATION_DRY_RUN=1", "EXPORT_ENABLED=0",
+        "SOLCAST_API_KEY=dummy", "SOLCAST_RESOURCE_IDS=dummy", "SOLAR_TIMEZONE=Europe/Warsaw", "BATTERY_CAPACITY_KWH=21.2",
+        "AUTOMATION_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.4,0.6,0.8,0.6,0.5,0.5,0.6,0.7,0.6,0.5,0.5,0.7,0.9,1.1,1.2,1.0,0.8,0.5,0.4",
+        "AUTOMATION_WEEKEND_DAILY_CONSUMPTION_KWH=19.2",
+        "dotnet", "run", "--project", "src/SolaxCloudMcp", "-c", "Release", "--no-launch-profile"
+      ],
+      "port": 18765
+    }
+  ]
+}

@@ -1,6 +1,10 @@
 .git
 .gitignore
 .venv
+**/bin
+**/obj
+tests
+publish
 .env
 .env.local
 .env.*.local

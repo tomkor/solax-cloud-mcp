@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SolaxCloudMcp/SolaxCloudMcp.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SolaxCloudMcp.Tests/SolaxCloudMcp.Tests.csproj" />
+  </Folder>
+</Solution>

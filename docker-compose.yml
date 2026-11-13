@@ -24,6 +24,8 @@ services:
       HTTP_PORT: 8000
       # HTTP API authentication
       HTTP_API_KEY: ${HTTP_API_KEY}
+      # Syncfusion Blazor licence key for the dashboard (optional)
+      SYNCFUSION_LICENSE_KEY: ${SYNCFUSION_LICENSE_KEY:-}
       # Solcast PV forecast (optional)
       SOLCAST_API_KEY: ${SOLCAST_API_KEY:-}
       SOLCAST_RESOURCE_IDS: ${SOLCAST_RESOURCE_IDS:-}
@@ -54,7 +56,7 @@ services:
       EXPORT_PRICE_MULTIPLIER: ${EXPORT_PRICE_MULTIPLIER:-1.0}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "dotnet", "SolaxCloudMcp.dll", "healthcheck"]
       interval: 30s
       timeout: 10s
       retries: 3

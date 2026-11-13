@@ -13,11 +13,7 @@ Authorization: Bearer YOUR_API_KEY
 Generate your API key and store it in the `HTTP_API_KEY` environment variable. To generate a strong key:
 
 ```bash
-# Linux/Mac
 openssl rand -base64 32
-
-# Python
-python -c "import secrets; print(secrets.token_urlsafe(32))"
 ```
 
 ## Base URL
@@ -647,7 +643,7 @@ Authorization: Bearer YOUR_API_KEY
 
 ### 11. Dashboard
 
-`GET /dashboard` serves an HTML page (no auth: the page holds no data). It asks once for `HTTP_API_KEY`, keeps it in the browser's `localStorage` and calls the API with it. It shows the export loop's latest inverter reading; a fresh SolaX call happens only when you press **Odczyt z falownika** (SolaX rate limit). Its only write action is the export switch below.
+`GET /dashboard` serves the dashboard, a Blazor Server page with Syncfusion components (no auth on the page itself: it shows no data until the browser gives the right `HTTP_API_KEY`, which it asks for once and keeps in `localStorage`). The page reads the planners on the server and does not call this HTTP API. It needs a WebSocket connection (`/_blazor`). It shows the export loop's latest inverter reading; a fresh SolaX call happens only when you press **Odczyt z falownika** (SolaX rate limit). Its only write action is the export switch below.
 
 `GET /api/dashboard/settings` (bearer token) returns the planner and export settings (no secrets), the next 6 charge-planner runs and the next export-loop tick, or `{"enabled": false}`.
 

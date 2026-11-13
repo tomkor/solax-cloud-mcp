@@ -2,7 +2,7 @@
 
 ## Status summary (written 2026-11-13 from the dated notes below)
 
-- All work is merged into `master` (PRs #1-#12). Tests: `uv sync && uv run pytest -q` (148 pass).
+- All work up to PR #12 is merged into `master`. 2026-11-13: the server was rewritten from Python to C# (.NET 10) on the branch `csharp-rewrite`; routes, `.env` settings, state files and planner results are the same (see "Differences from the Python version" at the end). Tests: `dotnet test` (189 pass). The notes below were written for the Python version; file names are updated, function names in old notes may still be the Python ones.
 - The HTTP server runs on the Proxmox LXC (see DEPLOYMENT.md) against the real SolaX, Solcast and PSE APIs.
 - 2026-10-05: grid charging switched to live (`AUTOMATION_DRY_RUN=0`).
 - 2026-10-11: the owner turned off the SolaX Cloud app rules.
@@ -46,11 +46,11 @@ All four were merged, followed by #5-#12 (consumption profiles, dashboard, decis
 ## Task 1: verify live data (read-only, safe)
 
 1. Copy `.env.example` to `.env` and fill in `SOLAX_*`, `HTTP_API_KEY`, `SOLCAST_*`, `SOLAR_TIMEZONE=Europe/Warsaw`, `BATTERY_CAPACITY_KWH=21.2`, `AUTOMATION_ENABLED=1`, the consumption profiles from the "Consumption" section, `EXPORT_ENABLED=1`, `EXPORT_MAX_POWER_KW=5`.
-2. Start the server: `set -a; source .env; set +a; TRANSPORT=http uv run python -m solax_cloud_mcp`
+2. Start the server: `set -a; source .env; set +a; TRANSPORT=http dotnet run -c Release --project src/SolaxCloudMcp`
 3. Check each endpoint (`Authorization: Bearer $HTTP_API_KEY`):
    - `POST /api/realtime-data {}`: battery `soc_percent` is present and the sign of `chargeDischargePower_W` is known (discharge = negative or positive?).
    - `GET /api/solar-forecast?hours=24`: Solcast values look sane for 6.48 kWp.
-   - `GET /api/prices?hours=24`: **verify PSE parsing** (`prices.py`). We assumed `dtime` = local period **end**, `"24:00:00"` = next midnight, `rce_pln` in PLN/MWh. Compare with https://www.pse.pl or the RCE chart.
+   - `GET /api/prices?hours=24`: **verify PSE parsing** (`Prices.cs`). We assumed `dtime` = local period **end**, `"24:00:00"` = next midnight, `rce_pln` in PLN/MWh. Compare with https://www.pse.pl or the RCE chart.
    - `POST /api/automation/preview` and `POST /api/export/preview`: sanity-check the numbers.
 4. Fix any parsing or format mismatch, with a test that uses a real captured response.
 
@@ -64,7 +64,7 @@ The charge planner (#3) assumes `chargeUpperSoc` ("Charge battery to") limits **
 
 ## Task 3 (main): implement export execution
 
-The planner already computes, every 15 min, the current slot's `dischargeSetpoint_kW` / `expectedExport_kW` (`automation.py`: `compute_export_plan`, `AutomationScheduler._export_loop`). With `EXPORT_DRY_RUN=0` it now sends the commands (see Requirements).
+The planner already computes, every 15 min, the current slot's `dischargeSetpoint_kW` / `expectedExport_kW` (`Automation.cs`: `compute_export_plan`, `AutomationScheduler._export_loop`). With `EXPORT_DRY_RUN=0` it now sends the commands (see Requirements).
 
 Candidate SolaX Developer API endpoints. Paths come from the open-source HA integration NoUsername10/Solax-Developer-API-for-Home-assistant (`const.py`), which itself only dry-runs them:
 
@@ -99,12 +99,12 @@ Requirements:
 1. **Done:** `POST /api/battery/export-test {power_kw<=2, minutes<=5, stop_soc>=30}` with `X-Confirm: yes`, and `POST /api/battery/export-stop` (see HTTP_API.md). The mode was verified on hardware with a script; run the endpoint itself once more with the owner watching.
 2. **Done, ran live 2026-10-05 20:14 (5 kW: battery 4.7 kW, export 3.86 kW after ~1 min ramp; exit back to Self Use in ~30 s):** execution in `_export_loop` (`AutomationScheduler.apply_export`): when `currentSlot.export`, send `soc_target_control_mode` with the setpoint capped at `EXPORT_MAX_POWER_KW` and `targetSoc = recommendedExportFloorSoc`. Otherwise make sure the inverter is back in normal Self Use (exit VPP). It must be idempotent across restarts.
 3. **Done:** improve the setpoint with live house load (`live_house_load_kw`: AC output minus `meter1.gridPower_W`, which is + export / - import per the SolaX docs; falls back to the profile when missing) (the AC-port target includes the house): at slot start, setpoint = planned export + current house load (from realtime data), capped.
-4. Safety (**done**, tested with fakes in `tests/test_automation.py`):
+4. Safety (**done**, tested with fakes in `tests/SolaxCloudMcp.Tests/AutomationTests.cs`):
    - abort if SOC <= `recommendedExportFloorSoc` (the inverter also stops there by itself);
    - on any error (command or planner), call exit VPP; also on server shutdown;
    - keep a kill switch (`EXPORT_DRY_RUN=1`);
    - log every command;
-   - never let the charge planner and the export loop write at the same time (shared asyncio lock).
+   - never let the charge planner and the export loop write at the same time (shared lock).
 5. Once the server exports reliably, the owner should **disable the SolaX Cloud price rule** so the two do not fight.
 
 ## Consumption (from the owner)
@@ -116,7 +116,7 @@ AUTOMATION_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.3,0.5,0.5,0.5,0.5,0.5,1.2,1
 AUTOMATION_WEEKEND_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.3,0.5,0.5,0.5,0.5,0.5,1.9,1.9,1.9,1.9,1.9,1.9,0.6,0.6,0.6,0.6,0.6,0.25,0.25  # 19.2 kWh, estimate
 ```
 
-**Tool (done):** `python -m solax_cloud_mcp.consumption --since 2026-10-02` computes both profiles from SolaX history. Real data starts on Fri 2026-10-02. First run (2026-10-05): weekday 11.7 kWh/day from 1 day only (evening peak 18-22, not 11-17), weekend 18.9 kWh/day from 2 days. Re-run after about 2 weeks of data and put the output into `.env`.
+**Tool (done):** `SolaxCloudMcp consumption --since 2026-10-02` computes both profiles from SolaX history. Real data starts on Fri 2026-10-02. First run (2026-10-05): weekday 11.7 kWh/day from 1 day only (evening peak 18-22, not 11-17), weekend 18.9 kWh/day from 2 days. Re-run after about 2 weeks of data and put the output into `.env`.
 
 ## Open questions for the owner
 
@@ -124,6 +124,20 @@ AUTOMATION_WEEKEND_CONSUMPTION_PROFILE=0.3,0.3,0.3,0.3,0.3,0.3,0.5,0.5,0.5,0.5,0
 
 ## Conventions
 
-- Python 3.11+, `uv`, httpx async, FastAPI, pytest + respx. Match the existing style: impl functions in `server.py` are shared by MCP and HTTP.
+- C# on .NET 10, ASP.NET Core minimal API, the official `ModelContextProtocol` SDK, xUnit. Match the existing style: methods in `SolaxService.cs` are shared by MCP and HTTP; API payloads and plans are `JsonObject` with literal keys.
 - Errors from upstream APIs go to logs. Clients get generic 502s.
 - Every hardware-writing feature ships in dry run first.
+
+## Differences from the Python version (2026-11-13)
+
+The planners give the same results; `GoldenTests.cs` proves it against results recorded from the Python server. These differences are deliberate:
+
+- PSE price slots in the repeated hour of the autumn DST night are 15 minutes long. Python made them 75 minutes long (slot start was one hour too early).
+- The forecast `hourly` list has two entries for 02:00 on the autumn DST night. Python merged them into one.
+- A 422 answer has `detail` as text (`"min_soc: an integer from 10 to 100 is required"`), not a list of objects.
+- Request bodies are strict: numbers must be JSON numbers (`20`, not `"20"`) and `active` must be `true` or `false`.
+- An unknown path under `/api/` answers 403 without a valid key (Python: 404).
+- The dashboard is a Blazor Server page with Syncfusion Blazor components (`Components/Dashboard.razor`), not `dashboard.html` with Chart.js. It reads the planners on the server, needs a WebSocket connection, and uses `SYNCFUSION_LICENSE_KEY`. Hiding a panel is gone; moving and resizing panels stays (Syncfusion Dashboard Layout). Times are shown in `SOLAR_TIMEZONE`, not in the browser's time zone.
+- No access log line per request. Warnings, errors and all inverter commands are logged.
+- A charge window with no battery data records an `InvalidOperationException` in the history (Python: `AttributeError`). Error names in the history are the .NET names.
+- Not run yet at the time of the rewrite: the Linux build on the server, the Docker image, and any real call to SolaX or Solcast from the C# code. The PSE call was tested against the real API.

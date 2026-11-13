@@ -1,47 +1,33 @@
 # Build stage
-FROM python:3.11-slim AS builder
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 
 WORKDIR /build
 
-# Install uv from its pinned official image (no curl | sh)
-COPY --from=ghcr.io/astral-sh/uv:0.8 /uv /bin/uv
+# Copy the app project only (secrets and tests are excluded via .dockerignore)
+COPY src/SolaxCloudMcp/ ./
+RUN dotnet publish -c Release -o /app
 
-# Copy project files (excluding secrets via .dockerignore)
-COPY pyproject.toml uv.lock README.md ./
-COPY src/ ./src/
-
-# Install exactly the versions pinned in uv.lock (fails if lockfile is out of date)
-ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
-    UV_PYTHON_DOWNLOADS=never \
-    UV_LINK_MODE=copy
-RUN uv sync --frozen --no-dev --no-editable
-
-# Runtime stage - ARM64 optimized for Raspberry Pi 3
-FROM python:3.11-slim
+# Runtime stage (multi-arch image: x64 and ARM64, e.g. Raspberry Pi 64-bit)
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 
 WORKDIR /app
 
-# Base image already ships ca-certificates; httpx uses certifi. Only add an unprivileged user.
-RUN useradd --system --uid 10001 --no-create-home app
+COPY --from=build /app ./
 
-# Copy virtual environment (with the package installed non-editable)
-COPY --from=builder /app/.venv /app/.venv
-
-ENV PATH="/app/.venv/bin:$PATH"
-ENV PYTHONUNBUFFERED=1
 # Inside the container listen on all interfaces; exposure is controlled by the port mapping
 ENV HTTP_HOST=0.0.0.0
 
-USER app
+# The unprivileged user that the .NET images provide
+USER $APP_UID
 
-# Health check for HTTP mode
+# Health check for HTTP mode (the image has no curl)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()" || exit 1
+    CMD ["dotnet", "SolaxCloudMcp.dll", "healthcheck"]
 
-# Default to HTTP mode for Pi deployment; override TRANSPORT env var to use MCP mode
+# Default to HTTP mode; override TRANSPORT to use MCP (stdio) mode
 ENV TRANSPORT=http
 
 EXPOSE 8000
 
 # Run the MCP/HTTP server
-CMD ["python", "-m", "solax_cloud_mcp"]
+CMD ["dotnet", "SolaxCloudMcp.dll"]

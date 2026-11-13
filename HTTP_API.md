@@ -1,6 +1,6 @@
 # SolaX Cloud HTTP API Reference
 
-Complete guide for consuming real-time solar inverter data and controlling battery settings via HTTP endpoints.
+Every endpoint of the HTTP server (`TRANSPORT=http`): inverter data, PV forecast, RCE prices, the charge and export planners, manual battery control and the dashboard.
 
 ## Authentication
 
@@ -23,10 +23,10 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 ## Base URL
 
 ```
-http://YOUR_PI_IP:8000
+http://SERVER_IP:8000
 ```
 
-Example: `http://192.168.1.100:8000`
+Example: `http://192.168.1.100:8000`. The server listens on `127.0.0.1` unless `HTTP_HOST=0.0.0.0` is set (Docker: `HTTP_BIND_ADDR`).
 
 ---
 
@@ -228,7 +228,9 @@ console.log(`Battery SOC: ${data.battery.soc_percent}%`);
 
 ### 3. Set Battery Self-Use Mode
 
-Configure battery charging/discharging thresholds and time periods. Ideal for automation based on weather, time-of-use rates, or other conditions.
+Configure battery charging/discharging thresholds and time periods.
+
+> **X3-NEO-LV:** the inverter accepts `charge_from_grid_enable` and `charge_upper_soc` but does not act on them, so they do not start grid charging. Use the charge planner (`AUTOMATION_ENABLED=1`, see README) for forecast-driven grid charging; it uses SolaX remote control.
 
 **Request:**
 ```http
@@ -456,7 +458,157 @@ Authorization: Bearer YOUR_API_KEY
 
 ---
 
-### 5. Export Test (manual battery discharge)
+### 5. Get Energy Prices (RCE)
+
+Polish market prices (RCE, 15-minute slots, PLN/kWh net) from the public PSE API. No PSE key needed; cached for 30 minutes.
+
+```http
+GET /api/prices?hours=24 HTTP/1.1
+Authorization: Bearer YOUR_API_KEY
+```
+
+- `hours` (integer, 1-48, optional, default `24`): how far ahead. PSE publishes the next day's prices in the afternoon, so the list can be shorter.
+
+**Response (200 OK):**
+```json
+{
+  "source": "PSE RCE",
+  "unit": "PLN/kWh (net)",
+  "slots": [
+    {"start": "2026-11-13T17:00+01:00", "end": "2026-11-13T17:15+01:00", "price_PLN_kWh": 1.1532}
+  ],
+  "max": 1.1532,
+  "min": 0.3120
+}
+```
+
+Times are Polish local time (PSE publishes them that way). A PSE failure returns `502`.
+
+---
+
+### 6. Automation Status
+
+Status of the charge planner and the export loop. Returns `{"enabled": false}` when `AUTOMATION_ENABLED` is not set.
+
+```http
+GET /api/automation HTTP/1.1
+Authorization: Bearer YOUR_API_KEY
+```
+
+**Response (200 OK), shortened:**
+```json
+{
+  "enabled": true,
+  "dryRun": false,
+  "nextRun": "2026-11-13T21:50+01:00",
+  "nextWindow": "22:00-06:00",
+  "lastResult": {"window": "13:00-15:00", "targetSoc": 42, "gridCharge": true, "dryRun": false},
+  "charging": false,
+  "export": {
+    "enabled": true,
+    "active": true,
+    "persisted": true,
+    "dryRun": false,
+    "lastPlan": {"socPercent": 78, "currentSlot": {"export": false}},
+    "lastRealtime": {"battery": {"soc_percent": 78}}
+  }
+}
+```
+
+- `lastResult`: the last charge plan (same shape as the preview below), or an `error` entry.
+- `charging`: `true` while an off-peak window with grid charging is running.
+- `export.active`: the dashboard switch. `export.persisted`: whether `SETTINGS_FILE` is set.
+- `export.lastPlan`: the last export plan (same shape as the export preview). `export.lastRealtime`: the realtime data that run read, so you do not need an extra SolaX call.
+
+---
+
+### 7. Charge Plan Preview
+
+Computes the grid-charge plan for the next off-peak window now. **Never writes to the inverter.** Returns `503` when automation is off and `502` when Solcast fails.
+
+```http
+POST /api/automation/preview HTTP/1.1
+Authorization: Bearer YOUR_API_KEY
+```
+
+**Response (200 OK):**
+```json
+{
+  "runAt": "2026-11-13T21:50+01:00",
+  "window": "22:00-06:00",
+  "windowStart": "2026-11-13T22:00+01:00",
+  "windowEnd": "2026-11-14T06:00+01:00",
+  "peakSegment": {
+    "start": "2026-11-14T06:00+01:00",
+    "end": "2026-11-14T13:00+01:00",
+    "hours": 7,
+    "pvForecast_kWh": 3.1,
+    "consumption_kWh": 4.9,
+    "maxDeficit_kWh": 2.4
+  },
+  "percentile": "p50",
+  "needFromBattery_kWh": 3.67,
+  "minSoc": 10,
+  "targetSoc": 28,
+  "gridCharge": true,
+  "forecastFetchedAt": "2026-11-13T18:02+01:00",
+  "forecastStale": false,
+  "dryRun": false
+}
+```
+
+- All times are local (`SOLAR_TIMEZONE`) with their UTC offset.
+- `peakSegment`: the peak-price hours after the window that the battery must cover.
+- `targetSoc`: SOC to reach from the grid during the window. `gridCharge: false` means no grid charging.
+
+---
+
+### 8. Export Plan Preview
+
+Computes the export plan now from the current SOC, the PV forecast and RCE prices. **Never writes to the inverter.** Returns `503` when `EXPORT_ENABLED` is not set and `502` when an upstream API fails.
+
+```http
+POST /api/export/preview HTTP/1.1
+Authorization: Bearer YOUR_API_KEY
+```
+
+**Response (200 OK), one slot shown:**
+```json
+{
+  "now": "2026-11-13T16:05+01:00",
+  "horizonEnd": "2026-11-13T22:00+01:00",
+  "socPercent": 78,
+  "storedAboveMinSoc_kWh": 14.42,
+  "reserveForHouse_kWh": 5.1,
+  "surplus_kWh": 9.32,
+  "recommendedExportFloorSoc": 35,
+  "minPrice_PLN_kWh": 1.0,
+  "slots": [
+    {
+      "start": "2026-11-13T17:00+01:00",
+      "end": "2026-11-13T17:15+01:00",
+      "price_PLN_kWh": 1.42,
+      "export_kWh": 1.0,
+      "expectedHouseLoad_kWh": 0.25,
+      "dischargeSetpoint_kW": 5.0,
+      "revenue_PLN": 1.42
+    }
+  ],
+  "plannedExport_kWh": 9.32,
+  "currentSlot": {"export": false},
+  "dryRun": false
+}
+```
+
+- `horizonEnd`: start of the next off-peak window. The battery keeps `reserveForHouse_kWh` for the house until then.
+- `recommendedExportFloorSoc`: the export stops at this SOC.
+- `minPrice_PLN_kWh` is compared with the **net** RCE price. Slot `price_PLN_kWh` and `revenue_PLN` include `EXPORT_PRICE_MULTIPLIER`, so they can be higher than the threshold.
+- `dischargeSetpoint_kW` = planned export + expected house load, at the inverter AC port.
+- `currentSlot`: `{"export": true, "dischargeSetpoint_kW", "expectedExport_kW", "price_PLN_kWh"}` when the current slot is an export slot.
+
+---
+
+### 9. Export Test (manual battery discharge)
 
 Discharge the battery for a few minutes to test export control. **This writes to the inverter.** It uses SolaX remote control (`soc_target_control_mode`) on `SOLAX_DEVICE_SN`.
 
@@ -482,7 +634,7 @@ Content-Type: application/json
 
 - If the command fails, the server sends the exit right away and returns `502`.
 
-### 6. Export Stop
+### 10. Export Stop
 
 Stop any remote-control command now. The inverter returns to its normal work mode (e.g. Self Use).
 
@@ -493,9 +645,9 @@ Authorization: Bearer YOUR_API_KEY
 
 **Response (200 OK):** `{"stopped": true}`
 
-### 7. Dashboard
+### 11. Dashboard
 
-`GET /dashboard` serves a read-only HTML page (no auth: the page holds no data). It asks once for `HTTP_API_KEY`, keeps it in the browser's `localStorage` and calls the API below with it. Live inverter data is fetched only on button click (SolaX rate limit).
+`GET /dashboard` serves an HTML page (no auth: the page holds no data). It asks once for `HTTP_API_KEY`, keeps it in the browser's `localStorage` and calls the API with it. It shows the export loop's latest inverter reading; a fresh SolaX call happens only when you press **Odczyt z falownika** (SolaX rate limit). Its only write action is the export switch below.
 
 `GET /api/dashboard/settings` (bearer token) returns the planner and export settings (no secrets), the next 6 charge-planner runs and the next export-loop tick, or `{"enabled": false}`.
 
@@ -602,12 +754,9 @@ except requests.exceptions.JSONDecodeError:
 - Cycle Times: Number of charge/discharge cycles
 
 **Sign Conventions**
-- **Power (AC, Grid, Battery):**
-  - Positive = consuming/charging
-  - Negative = exporting/discharging
-- **Grid Power:**
-  - Positive = importing from grid
-  - Negative = exporting to grid
+- **Grid power (`meter1.gridPower_W`):** positive = export to the grid, negative = import (SolaX docs). The planner computes house load as AC output minus grid power.
+- **AC phases (`ac.phases[].power_W`):** inverter AC output.
+- **Battery (`battery.chargeDischargePower_W`):** sign as reported by SolaX. Check it on your device before you use it in scripts.
 
 ### Status Codes
 
@@ -637,8 +786,8 @@ See README.md Appendix 6 for complete list.
 - Or set `SOLAX_DEVICE_SN` environment variable in `.env`
 
 ### "Connection refused"
-- Verify server is running: `docker-compose ps`
-- Check IP/port: use local network IP (e.g., `192.168.1.100`), not `localhost`
+- Verify the server is running: `systemctl status solax` (LXC) or `docker-compose ps` (Docker)
+- From another machine, use the server's LAN IP and make sure it listens on it (`HTTP_HOST=0.0.0.0`, or `HTTP_BIND_ADDR` in Docker)
 - Firewall: ensure port 8000 is not blocked
 
 ### "SolaX API error 10402"
@@ -672,8 +821,6 @@ See README.md Appendix 6 for complete list.
 
 ---
 
-## Examples Repository
-
-For complete working examples in multiple languages, see the `/examples` directory (if available).
+## More
 
 For more details on the underlying API and data fields, see [README.md](README.md).

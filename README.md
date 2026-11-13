@@ -1,6 +1,22 @@
 # SolaX Cloud MCP Server
 
-An MCP server that provides real-time access to solar inverter data from the SolaX Developer Platform API. Query your inverter's current power output, energy yields, battery status, and grid import/export data directly from Claude Code or Claude Desktop.
+An MCP server and HTTP server for a SolaX hybrid inverter with a battery, built on the SolaX Developer Platform API.
+
+- **MCP tools** for Claude Code / Claude Desktop: real-time inverter data, Solcast PV forecast, Polish RCE market prices, and (opt-in) battery Self Use settings.
+- **HTTP server** (`TRANSPORT=http`) with the same data as a REST API, plus:
+  - **Grid-charge planner**: before each cheap tariff window (e.g. G12w), charges the battery from the grid only as much as the next peak hours need (consumption minus PV forecast).
+  - **Export planner**: sells the battery surplus in the most expensive 15-minute RCE slots.
+  - **Dashboard** (`/dashboard`): live data, plans, decision history and an export on/off switch.
+
+Both planners send SolaX remote control commands and run in **dry run** by default. The production setup runs the HTTP server on a Proxmox LXC with systemd (see [DEPLOYMENT.md](DEPLOYMENT.md)).
+
+| Document | Content |
+|----------|---------|
+| [HTTP_API.md](HTTP_API.md) | Every HTTP endpoint with request and response examples |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Proxmox LXC + systemd (production), Docker / Raspberry Pi |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Modules, data flow, planners, design decisions |
+| [HANDOFF.md](HANDOFF.md) | Installation details, hardware test log and project history |
+| [.env.example](.env.example) | All settings with comments |
 
 ## Prerequisites
 
@@ -29,7 +45,7 @@ An MCP server that provides real-time access to solar inverter data from the Sol
 
 ```bash
 # Clone or navigate to the repo
-cd /Users/gary/mysrc/claude/solax-cloud-mcp
+cd /path/to/solax-cloud-mcp
 
 # Install uv if needed
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -65,7 +81,7 @@ claude mcp add solax-cloud \
   --env SOLAX_CLIENT_SECRET=your_client_secret \
   --env SOLAX_DEVICE_SN=your_device_sn \
   --scope user \
-  -- uv run --directory /Users/gary/mysrc/claude/solax-cloud-mcp solax-cloud-mcp
+  -- uv run --directory /path/to/solax-cloud-mcp solax-cloud-mcp
 ```
 
 If the above doesn't work (environment variable propagation issues), edit your MCP config JSON directly:
@@ -80,7 +96,7 @@ Add this entry:
     "args": [
       "run",
       "--directory",
-      "/Users/gary/mysrc/claude/solax-cloud-mcp",
+      "/path/to/solax-cloud-mcp",
       "solax-cloud-mcp"
     ],
     "env": {
@@ -94,9 +110,24 @@ Add this entry:
 
 ## Usage
 
-Once registered, the `get_realtime_data` tool is available in your MCP toolset. Use it to query real-time inverter data.
+Once registered, these MCP tools are available:
 
-The `set_battery_self_use_mode` tool changes inverter settings and is **not exposed by default**, so an LLM (e.g. via prompt injection) cannot reconfigure the inverter. Set `SOLAX_ALLOW_WRITE=1` to enable it. Its `min_soc`, `charge_upper_soc` and `charge_from_grid_enable` arguments are required.
+| Tool | When it is available | What it does |
+|------|----------------------|--------------|
+| `get_realtime_data` | always | Live inverter, PV, grid and battery readings |
+| `get_energy_prices` | always | Polish RCE market prices (15-minute slots, PSE, no key needed) |
+| `get_solar_forecast` | `SOLCAST_API_KEY` and `SOLCAST_RESOURCE_IDS` set | Solcast PV forecast |
+| `set_battery_self_use_mode` | `SOLAX_ALLOW_WRITE=1` | Changes the inverter Self Use settings |
+
+The `set_battery_self_use_mode` tool changes inverter settings and is **not exposed by default**, so an LLM (e.g. via prompt injection) cannot reconfigure the inverter. Its `min_soc`, `charge_upper_soc` and `charge_from_grid_enable` arguments are required.
+
+The charge and export planners and the dashboard exist only in the HTTP server, not in MCP mode.
+
+### Example Usage in Claude
+
+> "What's the current power output of my solar inverter?"
+
+Claude will call `get_realtime_data()` and report the results to you in human-friendly terms.
 
 ### Tool: `get_realtime_data`
 
@@ -209,9 +240,19 @@ Available when `SOLCAST_API_KEY` and `SOLCAST_RESOURCE_IDS` are set. Read-only P
 
 The API key is sent in the `Authorization` header only, never in the URL.
 
+Set `SOLCAST_CACHE_FILE` to keep the cache across restarts, so a restart does not spend an API call.
+
+### Tool: `get_energy_prices`
+
+**Arguments:** `hours` (1-48, default 24).
+
+**Returns:** the RCE price for each 15-minute slot in the next `hours` (`price_PLN_kWh`, net), plus `min` and `max`. Data comes from the public PSE API (`api.raporty.pse.pl`, no key needed) and is cached for 30 minutes. PSE publishes the next day's prices in the afternoon.
+
+## Battery Automation, Export and Dashboard (HTTP server)
+
 ### Battery Automation (forecast-driven grid charging)
 
-Built into the HTTP server and disabled by default. Designed for time-of-use tariffs such as Polish **G12w**: cheap at 22:00-06:00 and 13:00-15:00 on weekdays in winter (1 Oct - 31 Mar), 22:00-06:00 and 15:00-17:00 in summer (1 Apr - 30 Sep), and all day on weekends and public holidays. Set `TARIFF_OFFPEAK_WINDOWS` (winter or all year) and `TARIFF_OFFPEAK_WINDOWS_SUMMER` for other tariffs.
+Built into the HTTP server and disabled by default. Enable it with `AUTOMATION_ENABLED=1`; it needs `SOLAX_DEVICE_SN`, the `SOLCAST_*` settings and `BATTERY_CAPACITY_KWH`. Designed for time-of-use tariffs such as Polish **G12w**: cheap at 22:00-06:00 and 13:00-15:00 on weekdays in winter (1 Oct - 31 Mar), 22:00-06:00 and 15:00-17:00 in summer (1 Apr - 30 Sep), and all day on weekends and public holidays. Set `TARIFF_OFFPEAK_WINDOWS` (winter or all year) and `TARIFF_OFFPEAK_WINDOWS_SUMMER` for other tariffs.
 
 **How it works:** a few minutes before each daily off-peak window (`AUTOMATION_LEAD_MINUTES`), the planner:
 1. Takes the peak-price hours right after the window, e.g. 06:00-13:00 after the night window and 15:00-22:00 after the midday one. When the window is followed by more off-peak time (Friday night, holidays), there is nothing to cover and grid charging is disabled.
@@ -233,13 +274,11 @@ House consumption comes from `AUTOMATION_CONSUMPTION_PROFILE`, 24 hourly kWh val
 
 See `.env.example` for all `AUTOMATION_*` and `TARIFF_*` settings.
 
-### Market Prices and Export Planner (RCE, dry run)
+### Export Planner (RCE prices)
 
-**Prices:** the `get_energy_prices` MCP tool and `GET /api/prices?hours=24` return Polish market prices (RCE, 15-minute periods, PLN/kWh net) from the public PSE API (`api.raporty.pse.pl/api/rce-pln`, no key needed). Responses are cached for 30 minutes. PSE publishes the next day's prices in the afternoon.
-
-**Export planner** (`EXPORT_ENABLED=1`, requires battery automation): every 15 minutes it reads the current SOC, the PV forecast and RCE prices, then:
+The export planner (`EXPORT_ENABLED=1`, requires battery automation and `EXPORT_MAX_POWER_KW`) uses the RCE prices from `get_energy_prices` / `GET /api/prices`. Every 15 minutes it reads the current SOC, the PV forecast and RCE prices, then:
 1. Computes the battery **surplus**: energy above `AUTOMATION_MIN_SOC` minus what the house needs until the next off-peak window (consumption − PV, same model as the charge planner). Selling therefore never forces buying back at peak price.
-2. Allocates the surplus to the most expensive slots whose net RCE price is at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0; compared before `EXPORT_PRICE_MULTIPLIER`). `EXPORT_MAX_POWER_KW` is the **inverter AC output setpoint**: the house load is served first and only the rest goes to the grid. Per slot, `export = setpoint × 0.25 h − expected house load`. When exporting live, the setpoint sent is the planned export plus the house load measured now (AC output minus grid power), capped at `EXPORT_MAX_POWER_KW`. The plan shows `export_kWh`, `expectedHouseLoad_kWh` and the `dischargeSetpoint_kW` needed, which equals export plus load.
+2. Allocates the surplus to the most expensive slots whose **net** RCE price is at or above `EXPORT_MIN_PRICE_PLN_KWH` (default 1.0). `EXPORT_PRICE_MULTIPLIER` (e.g. 1.23 for Polish net-billing) does not change this check. It applies only to the slot `price_PLN_kWh` and `revenue_PLN` shown in the plan, so a slot can show a price above the threshold while its net price is below it. `EXPORT_MAX_POWER_KW` is the **inverter AC output setpoint**: the house load is served first and only the rest goes to the grid. Per slot, `export = setpoint × 0.25 h − expected house load`. When exporting live, the setpoint sent is the planned export plus the house load measured now (AC output minus grid power), capped at `EXPORT_MAX_POWER_KW`. The plan shows `export_kWh`, `expectedHouseLoad_kWh` and the `dischargeSetpoint_kW` needed, which equals export plus load.
 
 The plan also reports `recommendedExportFloorSoc`: the SOC floor that keeps enough energy for the house until the next off-peak window. Use it to tune a price-based export rule configured in SolaX Cloud (e.g. "discharge to X%, max 5 kW, if export price > 1 PLN"), which uses a fixed floor.
 
@@ -247,143 +286,58 @@ The plan also reports `recommendedExportFloorSoc`: the SOC floor that keeps enou
 
 > **Dry run by default.** With `EXPORT_DRY_RUN=0` the server sends, at the start of each export slot, SolaX remote control `soc_target_control_mode` (discharge at the slot setpoint until `recommendedExportFloorSoc`). In any other slot it exits remote control, so the inverter goes back to its normal work mode. The mode has no duration: if the server stops mid-slot, the inverter keeps discharging but stops at the floor SOC. Charge-planner and export writes never run at the same time. Disable any SolaX Cloud price rule that also discharges, so the two do not fight. (`push_power` mode is accepted but ignored by the X3-NEO-LV.)
 
-### Example Usage in Claude
+**Kill switch:** the dashboard button (or `POST /api/export/active {"active": false}`) turns the export loop off and exits remote control at once. Set `SETTINGS_FILE` to keep this switch across restarts; without it, export is on again after a restart. `EXPORT_DRY_RUN=1` is the permanent off switch.
 
-> "What's the current power output of my solar inverter?"
+### Dashboard
 
-Claude will call `get_realtime_data()` and report the results to you in human-friendly terms.
+`GET /dashboard` on the HTTP server opens a web page (Polish UI) with movable, resizable panels:
+- battery and inverter data (the export loop's latest reading; a fresh SolaX call only when you press **Odczyt z falownika**),
+- the next charge-planner runs and the last charge plan,
+- the export plan for the current 15-minute slots, RCE prices and the PV forecast,
+- the decision history (charge and export decisions, newest first),
+- the export on/off switch.
 
-## Docker: Build, Deploy & HTTP Consumption
+The page itself holds no data. It asks once for `HTTP_API_KEY`, keeps it in the browser's `localStorage` and calls the API with it. Set `DECISIONS_FILE` (JSON lines) to keep the decision history across restarts. Do not expose the port to the internet without an extra login layer in front (VPN or an authenticating reverse proxy).
 
-For containerized deployment on Raspberry Pi or any Docker-enabled system, you can run the server in HTTP mode:
+## HTTP Server
 
-### Build the Docker Image
-
-```bash
-# Build the image
-docker build -t solax-cloud-mcp:latest .
-
-# Verify the build
-docker images | grep solax-cloud-mcp
-```
-
-### Deploy with Docker Compose
-
-Configure your environment variables first:
+The HTTP server serves the REST API, the dashboard and the two planners. Run it directly:
 
 ```bash
-# Copy and edit the environment file
-cp .env.example .env
-nano .env
-```
-
-Fill in your SolaX credentials and generate a strong API key:
-
-```env
-SOLAX_CLIENT_ID=your_client_id
-SOLAX_CLIENT_SECRET=your_client_secret
-SOLAX_DEVICE_SN=your_device_sn
-HTTP_API_KEY=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
-```
-
-Start the HTTP server:
-
-```bash
-# Build and start the container in the background
-docker-compose up -d
-
-# Check logs
-docker-compose logs -f solax-http
-
-# Verify it's running
+set -a; source .env; set +a
+TRANSPORT=http uv run python -m solax_cloud_mcp
 curl http://localhost:8000/health
 ```
 
-The server listens on port **8000** and is accessible at `http://YOUR_PI_IP:8000`.
+`HTTP_API_KEY` is required. Generate one with `python -c "import secrets; print(secrets.token_urlsafe(32))"` and paste the result into `.env`. The server listens on `127.0.0.1:8000` by default; set `HTTP_HOST=0.0.0.0` to reach it from the LAN.
 
-### Consume the HTTP API
+**Run only one instance.** Each new SolaX access token invalidates the previous one, and two servers would also fight over the inverter.
 
-All endpoints (except `/health`) require a bearer token in the `Authorization` header.
+### Endpoints
 
-#### Health Check (no authentication)
+All endpoints except `/health` and `/dashboard` need `Authorization: Bearer <HTTP_API_KEY>`. Full request and response examples are in **[HTTP_API.md](HTTP_API.md)**.
 
-```bash
-curl http://192.168.1.100:8000/health
-```
+| Method and path | What it does | Writes to the inverter |
+|-----------------|--------------|------------------------|
+| `GET /health` | Health check | no |
+| `POST /api/realtime-data` | Live inverter data | no |
+| `GET /api/solar-forecast?hours=24` | Solcast PV forecast (`503` if not configured) | no |
+| `GET /api/prices?hours=24` | RCE prices, 15-minute slots | no |
+| `GET /api/automation` | Planner status, last charge plan, last export plan and reading | no |
+| `GET /api/automation/history` | Charge and export decisions, newest first | no |
+| `POST /api/automation/preview` | Charge plan for the next off-peak window | no |
+| `POST /api/export/preview` | Export plan computed now | no |
+| `GET /api/dashboard/settings` | Planner settings and next runs | no |
+| `GET /dashboard` | Web dashboard | no |
+| `POST /api/export/active` | Export loop on/off switch | only exits remote control |
+| `POST /api/battery/export-test` | Manual test discharge (header `X-Confirm: yes`) | yes |
+| `POST /api/battery/export-stop` | Exit remote control now | yes |
+| `POST /api/battery/self-use-mode` | Self Use settings | yes |
 
-Response:
-```json
-{"status": "ok"}
-```
+### Deployment
 
-#### Get Real-Time Inverter Data
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"device_sn": "X3ABCD0123"}' \
-  http://192.168.1.100:8000/api/realtime-data
-```
-
-Returns current power output, battery SOC, grid export/import, and more.
-
-#### Get Solar Forecast (Solcast)
-
-```bash
-curl -H "Authorization: Bearer YOUR_API_KEY" \
-  "http://localhost:8000/api/solar-forecast?hours=24"
-```
-
-Returns `503` when Solcast is not configured.
-
-#### Set Battery Self-Use Mode
-
-Configure battery charging/discharging thresholds:
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_sn": "X3ABCD0123",
-    "min_soc": 20,
-    "charge_upper_soc": 80,
-    "charge_from_grid_enable": 1
-  }' \
-  http://192.168.1.100:8000/api/battery/self-use-mode
-```
-
-### Python / JavaScript Examples
-
-Quick examples in Python and JavaScript are available in **[HTTP_API.md](HTTP_API.md)**, including:
-- Polling for real-time updates
-- Time-based battery scheduling
-- Error handling patterns
-- Rate limiting considerations
-
-### Deployment on Raspberry Pi
-
-Full deployment instructions (Docker installation, network setup, security, monitoring) are in **[DEPLOYMENT.md](DEPLOYMENT.md)**.
-
-### Docker Management
-
-```bash
-# View logs
-docker-compose logs -f solax-http
-
-# Restart the server
-docker-compose restart solax-http
-
-# Stop the server
-docker-compose down
-
-# Rebuild after code changes
-docker-compose up -d --build
-
-# Check resource usage
-docker stats solax-http
-```
+- **Proxmox LXC + systemd** (production setup): see [DEPLOYMENT.md](DEPLOYMENT.md#proxmox-lxc-with-systemd-no-docker). On stop, the server exits SolaX remote control before it quits.
+- **Docker / Raspberry Pi**: `docker-compose up -d`, details in [DEPLOYMENT.md](DEPLOYMENT.md). The compose file publishes the port on `127.0.0.1` only (set `HTTP_BIND_ADDR` for LAN access) and passes only the variables listed in `docker-compose.yml`. Add any other variable from `.env.example` there before you use it.
 
 ## Manual Testing
 
@@ -401,15 +355,16 @@ uv run --env-file .env python -c \
 ### Run Tests
 
 ```bash
-uv run pytest -v
+uv run pytest -q
 ```
 
-Tests include:
-- Response shaping and status decoding
-- Environment variable validation
-- Error handling and edge cases (battery-less devices, null status codes)
-- Dynamic PV/MPPT parsing
-- Case-insensitive field access
+The tests use `respx` mocks and fakes instead of the real APIs (SolaX, Solcast, PSE), so they need no credentials and never touch the inverter. They cover:
+- response shaping, status decoding and config validation,
+- the SolaX client (token refresh on 10402, remote control commands),
+- the Solcast forecast and its cache, RCE price parsing,
+- the charge and export planners, and the scheduler safety rules (exit remote control after errors, after a restart and at the window end; no export while grid charging),
+- the HTTP routes (auth, error mapping, export switch, dashboard settings),
+- the consumption profile tool.
 
 ### Interactive Inspection
 
@@ -519,27 +474,41 @@ The battery's `battery.status.code` is an integer:
 solax-cloud-mcp/
 ├── src/solax_cloud_mcp/
 │   ├── __init__.py         # Package metadata
-│   ├── __main__.py         # CLI entry point
-│   ├── server.py           # MCP server and tool definitions
-│   ├── client.py           # HTTP client and API calls
+│   ├── __main__.py         # Entry point: MCP (stdio) or HTTP, by TRANSPORT
+│   ├── server.py           # MCP tools and the *_impl functions shared with HTTP
+│   ├── http_server.py      # FastAPI routes, auth, scheduler start/stop
+│   ├── automation.py       # Tariff windows, charge planner, export planner, scheduler
+│   ├── client.py           # SolaX API calls, rate limit, remote control commands
 │   ├── auth.py             # OAuth2 token management
 │   ├── config.py           # Environment variable handling
-│   └── models.py           # Data models and response shaping
+│   ├── models.py           # Response shaping
+│   ├── forecast.py         # Solcast forecast and cache
+│   ├── prices.py           # RCE prices from PSE
+│   ├── consumption.py      # Consumption profiles from SolaX history (CLI)
+│   └── dashboard.html      # Dashboard page
 ├── tests/
-│   ├── fixtures/           # Test data
-│   ├── test_config.py      # Configuration tests
-│   └── test_models.py      # Response shaping tests
-├── pyproject.toml          # Project metadata and dependencies
-└── README.md               # This file
+│   ├── fixtures/           # Captured API responses
+│   ├── test_automation.py  # Planners and scheduler
+│   ├── test_client.py      # SolaX client
+│   ├── test_config.py      # Configuration
+│   ├── test_consumption.py # Consumption profiles
+│   ├── test_forecast.py    # Solcast
+│   ├── test_http_server.py # HTTP routes
+│   ├── test_models.py      # Response shaping
+│   └── test_prices.py      # RCE prices
+├── Dockerfile, docker-compose.yml
+├── .env.example            # All settings with comments
+└── pyproject.toml          # Project metadata and dependencies
 ```
 
 ### Adding Features
 
-The server is designed to be minimal and focused. To add more endpoints/tools:
+To add a new data source or tool:
 
-1. Fetch the data from SolaX Developer Platform API (extend `client.py`)
-2. Add a response shaping function if needed (extend `models.py`)
-3. Define a new `@server.tool()` in `server.py`
+1. Call the external API in its own module (like `client.py`, `forecast.py`, `prices.py`).
+2. Write a `*_impl` function in `server.py`, so MCP and HTTP share it.
+3. Register the MCP tool in `server.py` and the route in `http_server.py`.
+4. Anything that writes to the inverter ships with a dry-run switch that is on by default.
 
 ## License
 

@@ -3,7 +3,7 @@
 This MCP server can be deployed in two modes:
 
 1. **MCP Mode (stdio)**: Default for Claude integration
-2. **HTTP Mode**: Lightweight containerized server for Raspberry Pi
+2. **HTTP Mode** (`TRANSPORT=http`): REST API, dashboard and the battery automation. Run it as a long-lived service: on a Proxmox LXC with systemd (the production setup, below) or in Docker (Raspberry Pi or any Docker host).
 
 ## Proxmox LXC with systemd (no Docker)
 
@@ -136,74 +136,9 @@ The server will be accessible at `http://YOUR_PI_IP:8000`
 
 #### Docker Compose Configuration Reference
 
-Here's the complete `docker-compose.yml` configuration:
+The service is defined in [docker-compose.yml](docker-compose.yml). It publishes port 8000 on `${HTTP_BIND_ADDR:-127.0.0.1}`, runs with `restart: unless-stopped` and has a health check on `/health`.
 
-```yaml
-version: '3.8'
-
-services:
-  solax-http:
-    # Build the image from the project Dockerfile
-    build:
-      context: .
-      dockerfile: Dockerfile
-      # Optional: for Raspberry Pi 64-bit
-      args:
-        BUILDKIT_INLINE_CACHE: 1
-    
-    # Container name for easy reference
-    container_name: solax-cloud-http
-    
-    # Port mapping: localhost only by default; set HTTP_BIND_ADDR to the Pi's LAN IP to expose it
-    ports:
-      - "${HTTP_BIND_ADDR:-127.0.0.1}:8000:8000"
-    
-    # Environment variables (loaded from .env file)
-    environment:
-      # SolaX API credentials
-      SOLAX_CLIENT_ID: ${SOLAX_CLIENT_ID}
-      SOLAX_CLIENT_SECRET: ${SOLAX_CLIENT_SECRET}
-      SOLAX_DEVICE_SN: ${SOLAX_DEVICE_SN}
-      
-      # HTTP server configuration
-      TRANSPORT: http                    # Use HTTP mode (not MCP/stdio)
-      HTTP_HOST: 0.0.0.0                # All interfaces inside the container; host exposure via ports
-      HTTP_PORT: 8000                   # Port number
-      HTTP_API_KEY: ${HTTP_API_KEY}     # Bearer token for authentication
-      # Solcast PV forecast (optional)
-      SOLCAST_API_KEY: ${SOLCAST_API_KEY:-}
-      SOLCAST_RESOURCE_IDS: ${SOLCAST_RESOURCE_IDS:-}
-      SOLCAST_CACHE_MINUTES: ${SOLCAST_CACHE_MINUTES:-180}
-      SOLAR_TIMEZONE: ${SOLAR_TIMEZONE:-UTC}
-    
-    # Restart policy: restart unless manually stopped
-    restart: unless-stopped
-    
-    # Health check: verify the server is running
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s           # Check every 30 seconds
-      timeout: 10s            # Wait up to 10 seconds for response
-      retries: 3              # Mark unhealthy after 3 failed checks
-      start_period: 5s        # Give container 5s to start before first check
-
-# Optional: Uncomment below to run MCP mode instead of HTTP mode
-# (Not recommended for Raspberry Pi; HTTP is lighter-weight)
-#
-#  solax-mcp:
-#    build:
-#      context: .
-#      dockerfile: Dockerfile
-#    container_name: solax-cloud-mcp
-#    environment:
-#      SOLAX_CLIENT_ID: ${SOLAX_CLIENT_ID}
-#      SOLAX_CLIENT_SECRET: ${SOLAX_CLIENT_SECRET}
-#      SOLAX_DEVICE_SN: ${SOLAX_DEVICE_SN}
-#      TRANSPORT: stdio        # Use MCP mode (stdio-based)
-#    stdin_open: true
-#    tty: true
-#    restart: unless-stopped
-```
+**Only the variables listed under `environment:` in `docker-compose.yml` reach the container.** It does not pass `EXPORT_DRY_RUN`, `AUTOMATION_CHARGE_POWER_KW`, `TARIFF_OFFPEAK_WINDOWS_SUMMER`, `SOLCAST_CACHE_FILE`, `DECISIONS_FILE`, `SETTINGS_FILE` or `SOLAX_ALLOW_WRITE`. Add a line there for each one you set in `.env`. The compose file has no volume, so the `*_FILE` paths must point into a volume you add (e.g. `./data:/data`), or the files are lost when the container is recreated. Also note that compose always sets `TARIFF_OFFPEAK_WINDOWS`, so without `TARIFF_OFFPEAK_WINDOWS_SUMMER` the winter windows apply all year.
 
 **Key Configuration Options:**
 
@@ -224,7 +159,16 @@ services:
 | `BATTERY_CAPACITY_KWH` | Usable battery capacity | `21.2` |
 | `AUTOMATION_CHARGE_POWER_KW` | Grid charge power in off-peak windows (default `5`) | `5` |
 | `AUTOMATION_DAILY_CONSUMPTION_KWH` | Daily consumption (flat hourly profile) | `12` |
-| `TARIFF_OFFPEAK_WINDOWS` | Daily off-peak windows (full hours) | `22:00-06:00,13:00-15:00` |
+| `TARIFF_OFFPEAK_WINDOWS` | Daily off-peak windows (full hours), winter or all year | `22:00-06:00,13:00-15:00` |
+| `TARIFF_OFFPEAK_WINDOWS_SUMMER` | Off-peak windows 1 Apr - 30 Sep | `22:00-06:00,15:00-17:00` |
+| `EXPORT_ENABLED` | Run the export planner (needs `AUTOMATION_ENABLED=1`) | `1` |
+| `EXPORT_DRY_RUN` | Log export decisions only (default `1`) | `0` |
+| `EXPORT_MAX_POWER_KW` | Required with export: max inverter AC setpoint | `5` |
+| `EXPORT_MIN_PRICE_PLN_KWH` | Minimum net RCE price for export (default `1.0`) | `1.0` |
+| `EXPORT_PRICE_MULTIPLIER` | Multiplier for deposit value and revenue in the plan | `1.23` |
+| `SOLCAST_CACHE_FILE` | Keep the Solcast cache across restarts | `/opt/solax/solcast-cache.json` |
+| `DECISIONS_FILE` | Keep the decision history across restarts | `/opt/solax/decisions.jsonl` |
+| `SETTINGS_FILE` | Keep the dashboard export switch across restarts | `/opt/solax/settings.json` |
 | `SOLAX_ALLOW_WRITE` | MCP mode: expose `set_battery_self_use_mode` tool to the LLM (default off) | `1` |
 | `HTTP_PORT` | Port number | `8000` |
 | `TRANSPORT` | Execution mode | `http` or `stdio` |
@@ -240,57 +184,12 @@ The health check runs every 30 seconds and:
 
 ### HTTP API Endpoints
 
-All endpoints (except `/health`) require a bearer token:
+All endpoints except `/health` and `/dashboard` need `Authorization: Bearer YOUR_API_KEY`. See [HTTP_API.md](HTTP_API.md) for the full list with examples.
 
 ```bash
-curl -H "Authorization: Bearer YOUR_API_KEY" http://pi-ip:8000/...
+curl http://SERVER_IP:8000/health
+curl -X POST -H "Authorization: Bearer YOUR_API_KEY" -H "Content-Type: application/json" -d '{}' http://SERVER_IP:8000/api/realtime-data
 ```
-
-#### Health Check (no auth required)
-
-```bash
-curl http://pi-ip:8000/health
-```
-
-Response:
-```json
-{"status": "ok"}
-```
-
-#### Get Real-Time Data
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"device_sn": "X3ABCD0123"}' \
-  http://pi-ip:8000/api/realtime-data
-```
-
-If `device_sn` is omitted, uses `SOLAX_DEVICE_SN` from environment.
-
-Response: Complete inverter data (same as MCP tool)
-
-#### Set Battery Self-Use Mode
-
-```bash
-curl -X POST \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_sn": "X3ABCD0123",
-    "min_soc": 20,
-    "charge_upper_soc": 80,
-    "charge_from_grid_enable": 1,
-    "charge_start_time_period1": "06:00",
-    "charge_end_time_period1": "18:00",
-    "discharge_start_time_period1": "18:00",
-    "discharge_end_time_period1": "06:00"
-  }' \
-  http://pi-ip:8000/api/battery/self-use-mode
-```
-
-Response: API confirmation from inverter
 
 ### Management Commands
 
@@ -362,9 +261,13 @@ Then configure Claude to use the Docker container as the MCP server. The exact c
 
 ### Inverter Control
 
-- `set_battery_self_use_mode` is a mutating operation — it changes inverter settings
-- Only grant access to trusted clients with the API key
-- Consider implementing audit logging if multiple users have access
+- `set_battery_self_use_mode`, `export-test`, `export-stop`, `export/active` and both planners write to the inverter. Only give the API key to trusted clients.
+- The planners start in dry run (`AUTOMATION_DRY_RUN=1`, `EXPORT_DRY_RUN=1`). Watch `GET /api/automation`, the dashboard and the logs for a few days before you set them to `0`.
+- Kill switch for export: the dashboard button (`POST /api/export/active {"active": false}`), or `EXPORT_DRY_RUN=1` and a restart.
+- On stop, the server exits SolaX remote control. If it crashes mid-command, the inverter still stops at the target SOC.
+- Run only one server instance per SolaX client ID. Each new access token invalidates the previous one.
+- Turn off SolaX Cloud app rules that also charge or discharge, so they do not fight the server.
+- Every decision is logged; set `DECISIONS_FILE` to keep the history.
 
 ## Troubleshooting
 
@@ -412,7 +315,7 @@ curl -v -H "Authorization: Bearer YOUR_KEY" http://localhost:8000/health
 ```bash
 # Monitor health endpoint
 while true; do
-  curl -s http://pi-ip:8000/health | jq .
+  curl -s http://SERVER_IP:8000/health | jq .
   sleep 30
 done
 ```
@@ -441,6 +344,9 @@ docker-compose logs solax-http > server.log
 - [ ] Network latency acceptable (test from your automation client)
 - [ ] Rate limiting understood and monitored
 - [ ] Regular backups of important configuration
+- [ ] Only one server instance runs for the SolaX client ID
+- [ ] `SOLCAST_CACHE_FILE`, `DECISIONS_FILE` and `SETTINGS_FILE` point to a writable path
+- [ ] Planners checked in dry run before `AUTOMATION_DRY_RUN=0` / `EXPORT_DRY_RUN=0`
 
 ## Migration: MCP → HTTP or Vice Versa
 
@@ -456,8 +362,8 @@ docker-compose logs solax-http > server.log
 2. Configure your Claude client to use the server
 3. Rebuild: `docker-compose up -d --build`
 
-Both modes use the same underlying client library, so behavior is identical.
+Both modes use the same client library. The planners and the dashboard run only in HTTP mode.
 
 ---
 
-For more information, see [README.md](README.md) for MCP usage and API details.
+For more information, see [README.md](README.md) for MCP usage and [HTTP_API.md](HTTP_API.md) for the HTTP API.

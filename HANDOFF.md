@@ -1,6 +1,21 @@
 # Handoff: SolaX automation (for the local agent)
 
-Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast or PSE, so **nothing below has been run against real APIs or hardware**. Your job is to verify it on the real installation and finish the export execution.
+## Status summary (written 2026-11-13 from the dated notes below)
+
+- All work is merged into `master` (PRs #1-#12). Tests: `uv sync && uv run pytest -q` (148 pass).
+- The HTTP server runs on the Proxmox LXC (see DEPLOYMENT.md) against the real SolaX, Solcast and PSE APIs.
+- 2026-10-05: grid charging switched to live (`AUTOMATION_DRY_RUN=0`).
+- 2026-10-11: the owner turned off the SolaX Cloud app rules.
+- 2026-10-13: the X3-NEO-LV accepts `chargeFromGridEnable` / `chargeUpperSoc` but does not act on them. PR #12 changed grid charging to remote control (`soc_target_control_mode`, positive power).
+- 2026-11-01: PGE switched settlement to hourly RCE and export went live (`EXPORT_DRY_RUN=0`). Since PR #12, `EXPORT_MIN_PRICE_PLN_KWH` is compared with the net RCE price.
+- Dashboard at `/dashboard` (PRs #5-#11): plans, decision history (`DECISIONS_FILE`), export on/off switch (`SETTINGS_FILE`).
+- Still open: Task 3 item 1 (run `export-test` once with the owner watching), which app endpoint the manual 5 kW discharge used, and the DSO question at the end.
+
+The sections below are the original handoff and the work log. Where they disagree with this status, this status wins.
+
+---
+
+Context from a cloud session. When this was written, the cloud sandbox could not reach SolaX, Solcast or PSE, so nothing had been run against real APIs or hardware yet. The tasks below are marked **Done** where they were finished later on the real installation.
 
 ## Installation
 
@@ -12,7 +27,7 @@ Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast o
 - Microinstallation power declared to the DSO (OSD): **6.48 kW** (= PV). Connection power: 21 kW. Keep `EXPORT_MAX_POWER_KW` at or below 6.48 (now 5).
 - Net-billing deposit = RCE × **1.23** (confirmed by the owner): `EXPORT_PRICE_MULTIPLIER=1.23`, used for the deposit value and revenue in the plan. `EXPORT_MIN_PRICE_PLN_KWH` applies to the net RCE price, before the multiplier (since 2026-11-01).
 - Export valuation: **RCE** (15-min market price from PSE). The SolaX app uses a TGE price list as an approximation, because RCE cannot be configured there.
-- **Current state (2026-10-11):** PGE confirmed the contract settles at **monthly RCEm**, not RCE. The owner filed a request to switch to RCE. Until PGE confirms the switch, hourly prices (RCE, and the TGE list in the SolaX app) do not affect the bill, so export stays in dry run.
+- **State on 2026-10-11 (history):** PGE confirmed the contract settles at **monthly RCEm**, not RCE. The owner filed a request to switch to RCE. Until PGE confirms the switch, hourly prices (RCE, and the TGE list in the SolaX app) do not affect the bill, so export stays in dry run.
 - **2026-11-01:** PGE switched the settlement to hourly **RCE** from 1 November 2026 (owner's report). Check the first November invoice: prices must match RCE, not RCEm.
 - Owner verified manually: battery discharge at **5 kW** works. The discharge setpoint is **battery output**: the house load is served first and only the rest is exported. So 3 kW with a 2.5 kW appliance running gives almost no export.
 - **2026-10-11:** the owner turned off all SolaX Cloud built-in rules (grid charging and grid export). Before that, the export rule was "discharge to 50%, max 5 kW, if export price > 1 PLN". It supports **only one condition (no AND)**, so it cannot combine the price threshold with a dynamic SOC floor. This is why the server should execute exports (see Task 3).
@@ -26,7 +41,7 @@ Context from a cloud session. The cloud sandbox could not reach SolaX, Solcast o
 | #3 | `battery-automation` | G12w grid-charge planner inside the HTTP server: before each off-peak window it sets the target SOC from consumption − PV forecast; **dry run by default** |
 | #4 | `export-planner` | RCE prices from PSE (`get_energy_prices`, `GET /api/prices`); export planner (surplus above house need, best slots ≥ threshold, accounts for house load); `recommendedExportFloorSoc`; export execution via `soc_target_control_mode` (dry run by default) |
 
-Work on `export-planner`: it contains all four. Tests: `uv sync && uv run pytest -q` (102 pass).
+All four were merged, followed by #5-#12 (consumption profiles, dashboard, decision history, export switch, grid charging with remote control, net price threshold).
 
 ## Task 1: verify live data (read-only, safe)
 
@@ -40,6 +55,8 @@ Work on `export-planner`: it contains all four. Tests: `uv sync && uv run pytest
 4. Fix any parsing or format mismatch, with a test that uses a real captured response.
 
 ## Task 2: verify the Self Use assumption before disabling the charge dry run
+
+**Superseded (2026-10-13):** the inverter ignores the Self Use grid-charge settings, so grid charging now uses remote control (`charge_to_soc`). The notes below are kept as history.
 
 **Done 2026-10-05:** the inverter had "Charge Battery To" = 10% (Self Use, Charge From Grid enabled) all day, and PV still charged the battery to 94% (15.4 kWh charged, 0 kWh imported). So the limit applies only to grid charging. `AUTOMATION_DRY_RUN=0` and `AUTOMATION_MIN_SOC=10` (the owner's existing inverter value) are set on the LXC. The settings live in SolaX Cloud: Devices → X3-NEO-LV → Operation → Work Mode (not the TOU page).
 

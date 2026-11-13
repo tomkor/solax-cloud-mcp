@@ -11,7 +11,10 @@ This document describes the internal architecture, data flows, and design patter
 5. [Rate Limiting](#rate-limiting)
 6. [Response Shaping](#response-shaping)
 7. [Error Handling](#error-handling)
-8. [Deployment Architecture](#deployment-architecture)
+8. [Battery Automation](#battery-automation-http-server-only)
+9. [Deployment Architecture](#deployment-architecture)
+10. [Key Design Patterns](#key-design-patterns)
+11. [Testing Strategy](#testing-strategy)
 
 ---
 
@@ -20,9 +23,9 @@ This document describes the internal architecture, data flows, and design patter
 The SolaX Cloud MCP server is a unified bridge between the SolaX Developer Platform API and two distinct consumption interfaces:
 
 1. **MCP Mode (stdio)**: Protocol-based interface for Claude Desktop / Claude Code
-2. **HTTP Mode**: RESTful interface for containerized deployment on Raspberry Pi
+2. **HTTP Mode**: REST API, dashboard and the battery automation (charge and export planners), run as a long-lived service (Proxmox LXC + systemd in production, or Docker)
 
-The server is transport-agnostic — the core business logic (authentication, API calls, response shaping) is shared between both modes.
+The core logic (authentication, API calls, response shaping, forecast and prices) is shared between both modes. The automation scheduler runs only in HTTP mode.
 
 ```mermaid
 graph TB
@@ -41,11 +44,16 @@ graph TB
             Auth["OAuth2 Token Mgmt"]
             Client["HTTP Client<br/>API Calls"]
             Models["Response Shaping"]
+            Forecast["Solcast Forecast"]
+            Prices["RCE Prices"]
         end
+        Scheduler["Automation Scheduler<br/>(HTTP mode only)"]
     end
     
     subgraph "External"
         SolaxAPI["SolaX Developer<br/>Platform API"]
+        SolcastAPI["Solcast API"]
+        PSEAPI["PSE API (RCE)"]
     end
     
     Claude -->|MCP Messages| MCP
@@ -58,6 +66,12 @@ graph TB
     Transport --> Models
     Client -->|OAuth2 + API Calls| SolaxAPI
     SolaxAPI -->|JSON Response| Client
+    Forecast --> SolcastAPI
+    Prices --> PSEAPI
+    FastAPI --> Scheduler
+    Scheduler --> Client
+    Scheduler --> Forecast
+    Scheduler --> Prices
 ```
 
 ---
@@ -120,8 +134,13 @@ src/solax_cloud_mcp/
 ├── auth.py              # OAuth2 token lifecycle (fetch, cache, refresh, invalidate)
 ├── client.py            # SolaX API HTTP client (realtime data, battery control, rate limiting)
 ├── models.py            # Response shaping (normalize, decode status codes, group fields)
-├── server.py            # MCP tools & shared business logic
-└── http_server.py       # FastAPI HTTP server & routes
+├── server.py            # MCP tools & shared business logic (*_impl functions)
+├── http_server.py       # FastAPI HTTP server, routes, scheduler start/stop
+├── automation.py        # Tariff windows, charge planner, export planner, AutomationScheduler
+├── forecast.py          # Solcast forecast (multi-site sum, cache, optional cache file)
+├── prices.py            # RCE prices from the PSE API (15-min slots, 30-min cache)
+├── consumption.py       # CLI: hourly consumption profiles from SolaX history
+└── dashboard.html       # Dashboard page served at /dashboard
 ```
 
 ---
@@ -455,6 +474,63 @@ This handles cases where tokens expire between fetch and use, or credentials are
 
 ---
 
+## Battery Automation (HTTP server only)
+
+`automation.py` holds the planners as pure functions and one `AutomationScheduler`. `http_server.py` starts the scheduler when `AUTOMATION_ENABLED=1` and stops it on shutdown. MCP mode never starts it.
+
+```mermaid
+graph TB
+    subgraph "AutomationScheduler (asyncio tasks)"
+        Loop["Charge loop<br/>runs before each off-peak window"]
+        Window["charge_window<br/>check every 15 min during the window"]
+        Export["Export loop<br/>every 15 min"]
+        Lock["Shared write lock"]
+    end
+
+    Solcast["Solcast<br/>(forecast.py)"]
+    PSE["PSE RCE prices<br/>(prices.py)"]
+    Solax["SolaX API<br/>(client.py)"]
+    Files["DECISIONS_FILE<br/>SETTINGS_FILE"]
+
+    Loop -->|compute_plan| Solcast
+    Loop --> Window
+    Window -->|realtime SOC| Solax
+    Window -->|"charge_to_soc, exit"| Lock
+    Export -->|compute_export_plan| Solcast
+    Export --> PSE
+    Export -->|realtime SOC + house load| Solax
+    Export -->|"discharge_to_soc, exit"| Lock
+    Lock --> Solax
+    Loop --> Files
+    Export --> Files
+```
+
+### Charge planner
+
+1. `next_trigger` finds the next off-peak window start (`Tariff.windows_for`: G12w winter and summer hours, weekends and Polish public holidays) and runs `AUTOMATION_LEAD_MINUTES` before it.
+2. `compute_plan` takes the peak hours after the window, sums consumption minus the PV forecast hour by hour, and turns the largest cumulative deficit into `targetSoc`.
+3. `charge_window` runs from window start to window end. Every 15 minutes, if SOC is below the target, it sends `soc_target_control_mode` with a positive (charge) power of `AUTOMATION_CHARGE_POWER_KW`. The inverter stops by itself at the target. At the window end, and on errors or shutdown, it sends `exit_vpp_mode`.
+
+The X3-NEO-LV ignores the Self Use grid-charge settings, so the planner uses remote control, not `batch_set_spontaneity_self_use`.
+
+### Export planner
+
+1. Every 15 minutes `compute_export_plan` computes the surplus: energy above `AUTOMATION_MIN_SOC` minus the house need until the next off-peak window.
+2. It assigns the surplus to the most expensive 15-minute RCE slots whose net price is at or above `EXPORT_MIN_PRICE_PLN_KWH`.
+3. `apply_export` sends `soc_target_control_mode` with a negative (discharge) power in an export slot. The setpoint is the planned export plus the live house load (`live_house_load_kw`), capped at `EXPORT_MAX_POWER_KW`. The target SOC is `recommendedExportFloorSoc`. Outside export slots it exits remote control.
+
+### Safety rules
+
+- Both planners are dry run by default (`AUTOMATION_DRY_RUN`, `EXPORT_DRY_RUN`).
+- One `asyncio.Lock` serialises every inverter write. The export loop does nothing while a charge window is active.
+- Export: after a failed command or planner error, outside export slots, and on server stop, the scheduler sends `exit_vpp_mode`. After a restart the remote control state is unknown, so the first export run exits it.
+- Charge: a failed command is retried at the next 15-minute check. The exit is sent at the window end, also after errors and on server stop.
+- `soc_target_control_mode` has no duration. If the server dies mid-command, the inverter still stops at the target SOC.
+- The dashboard switch (`POST /api/export/active`) turns the export loop off and exits remote control at once. It is saved to `SETTINGS_FILE`.
+- Every decision is logged and kept in memory (last 200), and in `DECISIONS_FILE` when it is set.
+
+---
+
 ## Deployment Architecture
 
 ### Dual-Transport Architecture
@@ -695,8 +771,16 @@ Result: `"battery": null` in shaped response (not an error).
 
 ### Unit Tests
 
+Run with `uv run pytest -q` (148 tests). External APIs are mocked with `respx` or replaced with fakes; nothing reaches the inverter.
+
 - `test_config.py`: Environment variable loading
 - `test_models.py`: Response shaping, status decoding, dynamic parsing
+- `test_client.py`: Token retry on 10402, remote control commands
+- `test_forecast.py`: Solcast parsing, multi-site sum, cache and stale data
+- `test_prices.py`: PSE RCE parsing (period end times, DST)
+- `test_automation.py`: Tariff windows and holidays, charge and export plans, scheduler safety rules, export switch, decision history
+- `test_http_server.py`: Auth, routes, error mapping, export test/stop, dashboard settings
+- `test_consumption.py`: Consumption profiles from history
 
 ### Integration Tests
 
@@ -721,6 +805,6 @@ The SolaX Cloud MCP server is designed as a **lean, transport-agnostic bridge** 
 - **Automatic resilience**: Token refresh, retries on auth failure
 - **Clean responses**: Complex raw data transformed into intuitive structure
 - **Soft rate limiting**: Respects API quotas without external coordination
-- **Containerization**: Optimized for Raspberry Pi deployment
+- **Safe automation**: Dry run by default, one write lock, exit remote control on every error and on stop
 
 The architecture prioritizes simplicity over sophistication — avoiding premature abstraction, caching only what's necessary, and failing fast with clear error messages.
